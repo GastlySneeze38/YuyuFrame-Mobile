@@ -230,6 +230,12 @@ fn horizon_offer(setup: &Setup) -> bool {
     })
 }
 
+/// YuyuFrame : le jeu a été lancé par le launcher YuyuFrame, qui l'écrit dans
+/// `horizon-args.txt` (`YUYUFRAME=1`, une variable d'environnement pour `android::main`).
+fn launched_by_yuyuframe() -> bool {
+    std::env::var_os("YUYUFRAME").is_some_and(|v| v == "1")
+}
+
 fn mb(bytes: u64) -> String {
     format!("{:.0}", bytes as f64 / 1_000_000.0)
 }
@@ -465,6 +471,10 @@ impl Loading {
                 preparer::start(self.vanilla_root.clone());
             }
             (Files::Missing, State::SignedIn(_)) => accounts::download_files(),
+            // YuyuFrame (horizon-android/yuyu/UPSTREAM.md) : le launcher a déjà connecté le
+            // compte et l'a passé au jeu (--session-file) ; on ne redemande ni compte ni choix,
+            // les fichiers se téléchargent comme après « Play offline ».
+            (Files::Missing, _) if launched_by_yuyuframe() => accounts::download_files(),
             _ => {}
         }
     }
