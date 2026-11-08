@@ -174,7 +174,27 @@ fn shared() -> MutexGuard<'static, Shared> {
 
 /// The account now: what the account screen and the title's button show.
 pub fn state() -> State {
-    shared().state.clone()
+    let state = shared().state.clone();
+    // YuyuFrame (horizon-android/yuyu/UPSTREAM.md) : sans compte Starling enregistré, le compte
+    // que le launcher a passé au jeu (--session-file, crate::auth) est celui qui joue ; l'écran
+    // de compte et le bouton de l'écran-titre le montrent au lieu de « pas connecté ».
+    if matches!(state, State::Offline) && launched_by_yuyuframe()
+        && let Some(session) = crate::auth::current()
+    {
+        return State::SignedIn(Account {
+            uuid: format!("{:032x}", session.uuid),
+            name: session.name.clone(),
+            skin: None,
+            cape: None,
+        });
+    }
+    state
+}
+
+/// YuyuFrame : le jeu a été lancé par le launcher YuyuFrame, qui l'écrit dans
+/// `horizon-args.txt` (`YUYUFRAME=1`, une variable d'environnement pour `android::main`).
+pub fn launched_by_yuyuframe() -> bool {
+    std::env::var_os("YUYUFRAME").is_some_and(|v| v == "1")
 }
 
 /// The official files now.

@@ -15,7 +15,16 @@ monorepo.
 
 ## Ce qui est à nous
 
-**Rien dans leur code.** Tout ce qui est à nous :
+**Deux patchs dans leur code**, marqués « YuyuFrame », tous deux conditionnés à
+`accounts::launched_by_yuyuframe()` (variable `YUYUFRAME=1`, que le launcher écrit dans
+`horizon-args.txt`) : lancé autrement, le jeu se comporte exactement comme Starling.
+
+| Fichier | Changement | Pourquoi |
+|---|---|---|
+| `crates/horizon-client/src/accounts.rs` | `launched_by_yuyuframe()` ; `state()` rend `SignedIn` avec le compte passé par le launcher (`crate::auth::current()`) quand Starling n'a pas de compte à lui | Leur écran de compte et le bouton de l'écran-titre ne lisent que le compte enregistré par Starling : ils affichaient « pas connecté » alors que le jeu jouait avec le compte du launcher |
+| `crates/horizon-client/src/game/setup.rs` | Dans `poll_setup`, le téléchargement des fichiers du jeu lancé tout seul | Au premier démarrage, leur écran d'installation demandait de se connecter à **leur** compte (ou « Play offline ») avant de télécharger les fichiers de Minecraft. Lancé par YuyuFrame, le compte est déjà passé au jeu par `--session-file` : on lance directement le téléchargement, comme leur bouton « Play offline », qui ne touche pas au compte |
+
+Le reste à nous :
 
 - `yuyu/` (ce dossier) : `build_engine.py`, qui compile le moteur avec leur propre script et le
   dépose dans l'appli, et ce fichier.
