@@ -341,6 +341,12 @@ pub fn restart_app_saying(message: &str) {
 }
 
 /// `StarlingActivity.restart(String)`: the restart screen shows `message`.
+/// YuyuFrame: brings the app's launcher in front and leaves the game open behind it, paused
+/// (`StarlingActivity.showLauncher`). False when the activity could not.
+pub(crate) fn show_launcher() -> bool {
+    with_activity(|env, activity| env.call_method(activity, "showLauncher", "()Z", &[])?.z()).unwrap_or(false)
+}
+
 pub(crate) fn call_restart(message: &str) -> bool {
     keep_restart_look();
     with_activity(|env, activity| {

@@ -568,6 +568,31 @@ public class StarlingActivity extends NativeActivity {
     }
 
     /**
+     * YuyuFrame: the pause menu's Launcher row (game/interface/screens.rs). The app's launcher (its
+     * home-screen entry) comes in front; the game stays open behind it, paused, in its own task,
+     * and the launcher brings it back. False when the app has no launcher entry.
+     */
+    public boolean showLauncher() {
+        final Intent launcher = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (launcher == null) {
+            return false;
+        }
+        launcher.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    startActivity(launcher);
+                    overridePendingTransition(0, 0);
+                } catch (ActivityNotFoundException e) {
+                    // Nothing to show: the game stays.
+                }
+            }
+        });
+        return true;
+    }
+
+    /**
      * Start the game again in a new process (the game folder is chosen at start): LauncherActivity,
      * in a process of its own, waits for this one to end.
      */

@@ -4,9 +4,10 @@
 //! `NAME=value` for an environment variable.
 use std::path::{Path, PathBuf};
 
-/// The environment variable that puts a **Launcher** row in the pause menu (`1`): it saves the
-/// world and ends the game, so the launcher that started it shows again. Set by
-/// [`Launch::launcher_button`].
+/// The environment variable that puts a **Launcher** row in the pause menu (`1`). On Android it
+/// brings the app's launcher in front and leaves the game open behind it, paused, for the launcher
+/// to bring back (the game must run in a task of its own, or the launcher's return ends it);
+/// elsewhere it saves the world and ends the game. Set by [`Launch::launcher_button`].
 pub const LAUNCHER_BUTTON: &str = "HORIZON_LAUNCHER_BUTTON";
 
 /// Who plays.

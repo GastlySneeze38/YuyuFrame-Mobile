@@ -525,8 +525,16 @@ impl Game<'_> {
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
             30 => self.open_split_settings(),
-            // The world saves and the game ends as Quit does; the launcher beneath shows again.
-            31 => self.begin_closing_save(true)?,
+            // On Android the launcher comes in front and the game stays open behind it, paused
+            // under this menu, for the launcher to bring back. Elsewhere, or when that fails, the
+            // world saves and the game ends as Quit does.
+            31 => {
+                #[cfg(target_os = "android")]
+                if crate::android::show_launcher() {
+                    return Ok(());
+                }
+                self.begin_closing_save(true)?
+            }
             id @ ADDED_PAGES.. => {
                 let page = usize::from(id - ADDED_PAGES);
                 self.open_options_at(false, horizon_client::options_ui::Page::Added(page));
