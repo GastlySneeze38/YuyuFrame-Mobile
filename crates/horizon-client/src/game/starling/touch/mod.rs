@@ -1141,15 +1141,6 @@ impl Game<'_> {
         !self.touch_shown() || self.touch.wanted
     }
 
-    /// The text field shown now, by name: the chat, a sign, a book, a command block, the anvil's
-    /// name, the creative and recipe searches, the title's forms, the options' searches, the
-    /// world options' number boxes.
-    /// Whether the keyboard opened for context was put away with its field still up.
-    #[cfg(target_os = "android")]
-    pub(super) fn keyboard_put_away(&self, context: &str) -> bool {
-        self.touch.context == Some(context) && !self.touch.wanted
-    }
-
     #[cfg(target_os = "android")]
     pub(super) fn touch_request_keyboard(&mut self) {
         self.touch.context = self.text_context().or(Some("manual"));
