@@ -193,6 +193,17 @@ pub fn create_dir(game: &Path, folder: Folder, parts: &[&str]) -> io::Result<()>
 /// Copies the file `source` into `parts` of `folder` as `name`, never over a file that exists:
 /// the name gets ` (2)`, ` (3)`... before its extension. Returns the name it took.
 pub fn import(game: &Path, folder: Folder, parts: &[&str], source: &Path, name: &str) -> io::Result<String> {
+    import_from(game, folder, parts, &mut fs::File::open(source)?, name)
+}
+
+/// [`import`] from what `input` reads (a file the system's picker opened, bytes a launcher got).
+pub fn import_from(
+    game: &Path,
+    folder: Folder,
+    parts: &[&str],
+    input: &mut impl io::Read,
+    name: &str,
+) -> io::Result<String> {
     if folder == Folder::Configuration || !valid_name(name) {
         return Err(invalid());
     }
@@ -207,7 +218,7 @@ pub fn import(game: &Path, folder: Folder, parts: &[&str], source: &Path, name: 
         let target = dir.join(&candidate);
         match fs::OpenOptions::new().write(true).create_new(true).open(&target) {
             Ok(mut out) => {
-                let copied = fs::File::open(source).and_then(|mut input| io::copy(&mut input, &mut out));
+                let copied = io::copy(input, &mut out);
                 if let Err(e) = copied {
                     drop(out);
                     let _ = fs::remove_file(&target);

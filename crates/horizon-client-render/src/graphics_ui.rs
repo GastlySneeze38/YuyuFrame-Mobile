@@ -703,12 +703,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     {
         groups.insert(0, calibration_group());
     }
-    // Custom GPU drivers load through libadrenotools: Android on arm64 only (#470).
-    if !(cfg!(target_os = "android") && cfg!(target_arch = "aarch64")) {
-        for (_, groups) in &mut pages {
-            for (_, rows) in groups {
-                rows.retain(|r| r.item != Item::Horizon(H::GpuDrivers));
-            }
+    // Custom GPU drivers loaded through libadrenotools (#470): YuyuFrame's phone has no loader for
+    // them (Google Play allows no code from outside the APK), so the row is never shown.
+    for (_, groups) in &mut pages {
+        for (_, rows) in groups {
+            rows.retain(|r| r.item != Item::Horizon(H::GpuDrivers));
         }
     }
     // Only Windows and Linux have more than one graphics API, translucent batching (Metal

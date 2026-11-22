@@ -229,6 +229,15 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .collect()
 }
 const SPLIT_SETTINGS: &str = "horizon.pages.split_settings";
+/// The row back to the launcher that started the game (id 31): the world saved, the game ends, and
+/// the launcher, still open beneath it, shows again.
+const LAUNCHER: &str = "starling.launcher.button";
+
+/// Whether the launcher asked for that row (`HORIZON_LAUNCHER_BUTTON=1`, horizon-engine-api's
+/// `Launch::launcher_button`).
+fn launcher_button() -> bool {
+    std::env::var_os(horizon_engine_api::launch::LAUNCHER_BUTTON).is_some_and(|v| v == "1")
+}
 /// The pause menu's first id for the pages crates registered there: id `ADDED_PAGES + i` opens
 /// registered page `i`.
 const ADDED_PAGES: u8 = 40;
@@ -516,6 +525,8 @@ impl Game<'_> {
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
             30 => self.open_split_settings(),
+            // The world saves and the game ends as Quit does; the launcher beneath shows again.
+            31 => self.begin_closing_save(true)?,
             id @ ADDED_PAGES.. => {
                 let page = usize::from(id - ADDED_PAGES);
                 self.open_options_at(false, horizon_client::options_ui::Page::Added(page));
@@ -546,11 +557,13 @@ impl Game<'_> {
                     && *i < usize::from(u8::MAX - ADDED_PAGES)
             })
             .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8));
-        // YuyuFrame: no row back to Starling's launcher, which is removed.
+        // YuyuFrame: Starling's own launcher is removed; the row goes back to the launcher that
+        // started the game, when it asks for it.
         split
             .then_some((SPLIT_SETTINGS, 30))
             .into_iter()
             .chain(added)
+            .chain((launcher_button() && !self.options.split_guest).then_some((LAUNCHER, 31)))
     }
     pub(super) fn pause_click(&mut self) -> Result<()> {
         let (w, h) = {

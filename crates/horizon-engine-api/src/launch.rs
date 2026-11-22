@@ -4,6 +4,11 @@
 //! `NAME=value` for an environment variable.
 use std::path::{Path, PathBuf};
 
+/// The environment variable that puts a **Launcher** row in the pause menu (`1`): it saves the
+/// world and ends the game, so the launcher that started it shows again. Set by
+/// [`Launch::launcher_button`].
+pub const LAUNCHER_BUTTON: &str = "HORIZON_LAUNCHER_BUTTON";
+
 /// Who plays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Player {
@@ -28,6 +33,12 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// Asks the engine for the pause menu's Launcher row ([`LAUNCHER_BUTTON`]).
+    pub fn launcher_button(&mut self) {
+        self.env.retain(|(name, _)| name != LAUNCHER_BUTTON);
+        self.env.push((LAUNCHER_BUTTON.to_owned(), "1".to_owned()));
+    }
+
     /// The command line, one option an element: only options the launch contract keeps.
     pub fn arguments(&self) -> Vec<String> {
         let mut args = vec![

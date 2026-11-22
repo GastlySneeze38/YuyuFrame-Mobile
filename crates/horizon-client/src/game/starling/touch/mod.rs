@@ -801,7 +801,6 @@ impl Game<'_> {
         #[cfg(target_os = "android")]
         if self.files_offer_touch(t)
             || self.update_offer_touch(t)
-            || self.native_builds_touch(t)
         {
             return true;
         }

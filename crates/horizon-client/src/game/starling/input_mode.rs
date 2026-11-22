@@ -131,7 +131,6 @@ impl Game<'_> {
         let touch = mouse_touch(at, down);
         self.files_offer_touch(&touch)
             || self.update_offer_touch(&touch)
-            || self.native_builds_touch(&touch)
     }
 }
 

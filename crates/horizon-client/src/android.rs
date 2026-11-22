@@ -26,25 +26,10 @@ pub fn set_shared_folder(folder: PathBuf) {
     let _ = SHARED_FOLDER.set(folder);
 }
 
-/// The native mods this start opened from their own libraries (Compile v2's folder, android_lib.rs),
-/// by id: the Mods page's top says them.
-static NATIVE_LIBS_OPENED: OnceLock<Vec<&'static str>> = OnceLock::new();
-
-/// android_lib.rs's start, once the libraries and their packages are in.
-pub fn set_native_libs_opened(ids: Vec<&'static str>) {
-    let _ = NATIVE_LIBS_OPENED.set(ids);
-}
-
-/// The native mods this start opened from their own libraries, none before or without them.
-pub fn native_libs_opened() -> &'static [&'static str] {
-    NATIVE_LIBS_OPENED.get().map_or(&[], Vec::as_slice)
-}
-
 /// NativeActivity's entry point (the manifest's `android.app.func_name`, through the cdylib's
-/// `starling_on_create`): the game of this library, or of the build with native mods
-/// StarlingActivity loaded in its place (`STARLING_GAME_LIBRARY`, NativeMods.java). The activity
-/// loaded that build first, for its Java native methods; dlopen finds it loaded, so the activity
-/// and the game share one library.
+/// `starling_on_create`): the game of this library. YuyuFrame: never a build with native mods
+/// downloaded in its place (Starling's `STARLING_GAME_LIBRARY`): Google Play allows no downloaded
+/// code (yuyu/UPSTREAM.md).
 ///
 /// # Safety
 ///
@@ -62,33 +47,8 @@ pub unsafe fn on_create(
             saved_size: usize,
         );
     }
-    type OnCreate = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize);
-    let own: OnCreate = ANativeActivity_onCreate;
-    if let Some(path) = std::env::var_os("STARLING_GAME_LIBRARY") {
-        use std::os::unix::ffi::OsStrExt;
-        let path = std::ffi::CString::new(path.as_bytes()).unwrap_or_default();
-        // SAFETY: NUL-terminated names; RTLD_NOW (2). The symbol is android-activity's entry
-        // point in a build of this same source, so it has the signature declared above.
-        let entry = unsafe {
-            let build = dlopen(path.as_ptr(), 2);
-            if build.is_null() {
-                std::ptr::null_mut()
-            } else {
-                dlsym(build, c"ANativeActivity_onCreate".as_ptr())
-            }
-        };
-        if !entry.is_null() && entry != own as *mut std::ffi::c_void {
-            // SAFETY: see above.
-            let entry = unsafe { std::mem::transmute::<*mut std::ffi::c_void, OnCreate>(entry) };
-            return unsafe { entry(activity, saved, saved_size) };
-        }
-        logcat(
-            log::Level::Error,
-            "the build with native mods has no entry point: playing the APK's own game",
-        );
-    }
     // SAFETY: NativeActivity's own arguments, passed on.
-    unsafe { own(activity, saved, saved_size) }
+    unsafe { ANativeActivity_onCreate(activity, saved, saved_size) }
 }
 
 /// Run `f` with the activity, on the calling thread (attached to the VM for the call). None
@@ -168,25 +128,6 @@ fn clipboard_get() -> Option<String> {
     .flatten()
 }
 
-/// The folder Android extracted the APK's libraries to (ApplicationInfo.nativeLibraryDir), where
-/// the Java launchers are.
-fn library_dir() -> Option<PathBuf> {
-    with_activity(|env, activity| {
-        let info = env
-            .call_method(
-                activity,
-                "getApplicationInfo",
-                "()Landroid/content/pm/ApplicationInfo;",
-                &[],
-            )?
-            .l()?;
-        let dir = env
-            .get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?
-            .l()?;
-        Ok(PathBuf::from(String::from(env.get_string(&dir.into())?)))
-    })
-}
-
 /// A file of the APK's assets/, whole.
 fn asset(name: &str) -> Option<Vec<u8>> {
     let name = std::ffi::CString::new(name).ok()?;
@@ -194,151 +135,6 @@ fn asset(name: &str) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut asset, &mut bytes).ok()?;
     Some(bytes)
-}
-
-/// The device's Android API level (`android.os.Build.VERSION.SDK_INT`), for a custom GPU
-/// driver's `minApi`.
-fn device_api() -> Option<i32> {
-    with_activity(|env, _| {
-        let version = env.find_class("android/os/Build$VERSION")?;
-        env.get_static_field(version, "SDK_INT", "I")?.i()
-    })
-}
-
-/// libadrenotools' driver flags (`include/adrenotools/priv.h`, third_party/libadrenotools).
-const ADRENOTOOLS_DRIVER_CUSTOM: std::ffi::c_int = 1;
-const ADRENOTOOLS_DRIVER_FILE_REDIRECT: std::ffi::c_int = 2;
-
-/// A path with the trailing `/` adrenotools' directories need, as a C string.
-fn cstring_dir(path: &Path) -> Option<std::ffi::CString> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut bytes = path.as_os_str().as_bytes().to_vec();
-    if bytes.contains(&0) {
-        return None;
-    }
-    bytes.push(b'/');
-    std::ffi::CString::new(bytes).ok()
-}
-
-/// What the custom GPU driver loader says: no logger runs yet when it loads (logging
-/// starts in `entry::start`), so `main` replays these once it does, into the file and logcat.
-static GPU_DRIVER_NOTES: std::sync::OnceLock<Vec<(log::Level, String)>> =
-    std::sync::OnceLock::new();
-
-/// Load the chosen custom GPU driver, if any: adrenotools hooks libvulkan so the renderer
-/// opens the driver's Vulkan instead of the system's. Falls back to the system driver when
-/// nothing is chosen, the phone cannot run it, or it was set aside or failed to load.
-fn load_custom_driver() -> Vec<(log::Level, String)> {
-    let mut notes = Vec::new();
-    let mut warn = |message: String| notes.push((log::Level::Warn, message));
-    let Some(id) = crate::gpu_drivers::selected() else {
-        return notes;
-    };
-    let Some(driver) = crate::gpu_drivers::list().into_iter().find(|d| d.id == id) else {
-        return notes;
-    };
-    let Some(api) = device_api() else {
-        warn("Horizon: cannot ask Android's API level; the system GPU driver plays".into());
-        return notes;
-    };
-    if !crate::gpu_drivers::compatible(&driver.meta, api) {
-        warn(format!(
-            "Horizon: the {} driver needs Android {} (this phone: {api}); the system GPU driver plays",
-            driver.label(),
-            driver.meta.min_api,
-        ));
-        return notes;
-    }
-    if !crate::gpu_drivers::note_start() {
-        if let Some(notice) = crate::gpu_drivers::take_notice() {
-            warn(format!("Horizon: {notice}"));
-        }
-        return notes;
-    }
-    // SAFETY: NUL-terminated names; RTLD_NOW (2), RTLD_LOCAL (0).
-    let adrenotools = unsafe { dlopen(c"libadrenotools.so".as_ptr(), 2) };
-    if adrenotools.is_null() {
-        warn("Horizon: libadrenotools is missing; the system GPU driver plays".into());
-        return notes;
-    }
-    type OpenLibVulkan = unsafe extern "C" fn(
-        std::ffi::c_int,
-        std::ffi::c_int,
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
-        *mut *mut std::ffi::c_void,
-    ) -> *mut std::ffi::c_void;
-    // SAFETY: as above; the symbol has the signature declared here when found.
-    let open = unsafe {
-        let open = dlsym(adrenotools, c"adrenotools_open_libvulkan".as_ptr());
-        if open.is_null() {
-            warn("Horizon: libadrenotools has no driver hook; the system GPU driver plays".into());
-            return notes;
-        }
-        std::mem::transmute::<*mut std::ffi::c_void, OpenLibVulkan>(open)
-    };
-    let (Some(hook), Some(custom), Some(name)) = (
-        library_dir().and_then(|dir| cstring_dir(&dir)),
-        cstring_dir(&driver.dir()),
-        std::ffi::CString::new(driver.meta.library_name.as_str()).ok(),
-    ) else {
-        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
-        return notes;
-    };
-    let redirect_dir = driver.dir().join(crate::gpu_drivers::REDIRECT);
-    let Some(redirect) = std::fs::create_dir_all(&redirect_dir)
-        .ok()
-        .and(cstring_dir(&redirect_dir))
-    else {
-        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
-        return notes;
-    };
-    // SAFETY: NUL-terminated directories (each ends in `/`, as adrenotools requires) and
-    // library name; null for the tmp dir (memfd on Android 9+) and the unused mapping
-    // handle. Both handles stay loaded for the process; nothing closes them.
-    let handle = unsafe {
-        open(
-            2, // RTLD_NOW | RTLD_LOCAL
-            ADRENOTOOLS_DRIVER_CUSTOM | ADRENOTOOLS_DRIVER_FILE_REDIRECT,
-            std::ptr::null(),
-            hook.as_ptr(),
-            custom.as_ptr(),
-            name.as_ptr(),
-            redirect.as_ptr(),
-            std::ptr::null_mut(),
-        )
-    };
-    if handle.is_null() {
-        warn(format!(
-            "Horizon: the {} driver did not load; the system GPU driver plays",
-            driver.label(),
-        ));
-        return notes;
-    }
-    // SAFETY: as above.
-    let get = unsafe { dlsym(handle, c"vkGetInstanceProcAddr".as_ptr()) };
-    if get.is_null() {
-        warn(format!(
-            "Horizon: the {} driver gave no Vulkan; the system GPU driver plays",
-            driver.label(),
-        ));
-        return notes;
-    }
-    let addr = get as usize;
-    wgpu::hal::vulkan::set_custom_get_instance_proc_addr(addr);
-    crate::gpu_drivers::set_active(&id, addr);
-    notes.push((
-        log::Level::Info,
-        format!(
-            "Horizon: custom GPU driver {} from {}",
-            driver.label(),
-            driver.dir().display()
-        ),
-    ));
-    notes
 }
 
 /// `data` sealed by StarlingActivity.sealSecret (the Android Keystore's key).
@@ -1578,15 +1374,9 @@ pub fn main(
         log::warn!("Could not initialize diagnostics: {error}");
     }
     crate::diagnostics::collect_exits(&private);
-    // A chosen custom GPU driver replaces the system's libvulkan before anything loads Vulkan
-    // (#470). Its report waits for the log: none runs yet.
-    let _ = GPU_DRIVER_NOTES.set(load_custom_driver());
+    // YuyuFrame: no custom GPU driver (Starling's adrenotools loader): Google Play allows no code
+    // from outside the APK. The system's Vulkan driver always plays.
     crate::entry::set_after_log(move || {
-        if let Some(driver_notes) = GPU_DRIVER_NOTES.get() {
-            for (level, message) in driver_notes {
-                log::log!(*level, "{message}");
-            }
-        }
         log::info!(
             "Horizon: Android, game folder {}, private files {}, arguments {args:?}, environment {env:?}",
             home.display(),

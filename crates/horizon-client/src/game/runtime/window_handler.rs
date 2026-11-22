@@ -294,7 +294,6 @@ impl Game<'_> {
         {
             self.poll_files_offer();
             self.poll_update_offer();
-            self.poll_native_builds();
         }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);

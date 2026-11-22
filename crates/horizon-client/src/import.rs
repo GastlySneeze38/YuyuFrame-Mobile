@@ -24,9 +24,6 @@ pub enum Kind {
     Mod,
     /// A native mod (`horizon-native.json`): for `horizon-native-mods/`, compiled from there.
     NativeMod,
-    /// A custom GPU driver package (`meta.json`): for `gpu-drivers/`, loaded at the next
-    /// start (`gpu_drivers`).
-    GpuDriver,
     /// A folder horizon-prepare made (`horizon-resources.json`), zipped.
     Resources,
     /// Bedrock Edition content (.mcpack, .mcaddon, .mcworld, .mctemplate).
@@ -67,12 +64,8 @@ pub fn classify(path: &Path) -> (Kind, String) {
     else {
         return (Kind::Unknown, String::new());
     };
-    // A custom GPU driver (Turnip, PanVK, RADV...): `meta.json` names the driver library.
-    if let Some(prefix) = crate::gpu_drivers::manifest_prefix(&names)
-        && crate::gpu_drivers::read_manifest(path, &prefix).is_some()
-    {
-        return (Kind::GpuDriver, prefix);
-    }
+    // YuyuFrame: a custom GPU driver package (`.adpkg`) is not taken: no loader runs it (Google
+    // Play allows no code from outside the APK), so it reads as an unknown file.
     let found = |marker: &str| marker_prefix(&names, marker);
     if let Some(prefix) = found("horizon-resources.json") {
         return (Kind::Resources, prefix);
@@ -223,23 +216,12 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
                 "Mod \"{title}\" added: turn it on in Options > Mods, or, if it adds blocks or items, pick it for a new world in Create New World > More > Mods & Data Packs"
             )
         }
+        // YuyuFrame: a native mod is code compiled into another game, which a phone app from
+        // Google Play may not download and run.
         Kind::NativeMod => {
-            // Either format: the registry's `horizon-native.json` bundle or a flat package.
-            let bundle = horizon_mod_package::index::native::Any::read(path)
-                .map_err(|e| format!("{name} can't be added: {e}"))?;
-            let id = bundle.id().to_owned();
-            let dir = places.game.join("horizon-native-mods");
-            fs::create_dir_all(&dir).map_err(fail)?;
-            copy_file(path, &dir.join(format!("{id}.hnmod"))).map_err(fail)?;
-            format!("Native mod \"{id}\" added: compile it in Options > Mods")
-        }
-        Kind::GpuDriver => {
-            let driver = crate::gpu_drivers::install_from_zip(path, &title)
-                .map_err(|e| format!("{name} can't be added: {e}"))?;
-            format!(
-                "GPU driver \"{}\" added: pick it in Video Settings > GPU Drivers",
-                driver.meta.name
-            )
+            return Err(format!(
+                "{name} is a native mod: they don't run in this app. Content and WebAssembly mods do."
+            ));
         }
         Kind::Resources => {
             install_resources(path, &prefix, &places.resources)?;
@@ -573,17 +555,8 @@ mod tests {
                     ),
                     ("vulkan.ad07XX.so", b""),
                 ],
-                Kind::GpuDriver,
+                Kind::Unknown,
                 "",
-            ),
-            (
-                "nested-driver.zip",
-                &[(
-                    "Turnip/meta.json",
-                    br#"{"name":"Turnip","libraryName":"vulkan.ad07XX.so"}"#,
-                )],
-                Kind::GpuDriver,
-                "Turnip/",
             ),
             (
                 "fake-driver.zip",

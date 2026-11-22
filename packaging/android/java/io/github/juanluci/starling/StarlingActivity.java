@@ -77,22 +77,10 @@ public class StarlingActivity extends NativeActivity {
     private static final int PICK_FILE = 1;
     /** Horizon Android's folder picked: its worlds and packs come over (HorizonImport). */
     private static final int PICK_HORIZON = 2;
-    /** Android's answer to the permissions the running build's mods need. */
-    private static final int MOD_PERMISSIONS = 3;
-
-    /** The build with native mods this game runs (loadGame), or null for the APK's own. */
-    private File modBuild;
-
-    /** The build with native mods loaded in place of the APK's library (android_lib.rs). */
-    private static final String GAME_LIBRARY = "STARLING_GAME_LIBRARY";
-    /** This install of the APK (NativeMods.stamp), for game/native_builds.rs. */
-    private static final String APK_STAMP = "STARLING_APK";
-
     /**
-     * Loads the game library with this class loader, so the native methods resolve: a build with
-     * native mods when one is chosen (NativeMods), else the APK's own. NativeActivity then loads
-     * the APK's library, whose entry point (starling_on_create, android_lib.rs) hands over to the
-     * build named by GAME_LIBRARY, the very library loaded here.
+     * Loads the game library with this class loader, so the native methods resolve. YuyuFrame:
+     * always the APK's own, never a build with native mods downloaded in its place (Starling's
+     * NativeMods): Google Play allows no downloaded code (yuyu/UPSTREAM.md).
      */
     private void loadGame() {
         // The game's thread (android_main, which android-activity starts with std's default 2 MiB
@@ -105,31 +93,6 @@ public class StarlingActivity extends NativeActivity {
                     android.os.Process.is64Bit() ? "16777216" : "8388608", false);
         } catch (ErrnoException e) {
             // std's default then.
-        }
-        String stamp = NativeMods.stamp(this);
-        if (stamp != null) {
-            try {
-                // The game writes it beside the builds it downloads, and tells an old build by it.
-                Os.setenv(APK_STAMP, stamp, true);
-            } catch (ErrnoException e) {
-                // The game then marks no build as made for this install: none loads.
-            }
-        }
-        File build = NativeMods.chosen(this, versionName());
-        if (build != null) {
-            try {
-                Os.setenv(GAME_LIBRARY, build.getPath(), true);
-                System.load(build.getPath());
-                modBuild = build;
-                return;
-            } catch (UnsatisfiedLinkError | ErrnoException e) {
-                try {
-                    Os.unsetenv(GAME_LIBRARY);
-                } catch (ErrnoException ignored) {
-                    // Nothing was set.
-                }
-                NativeMods.failed(this, e.getMessage());
-            }
         }
         System.loadLibrary("horizon_android");
     }
@@ -559,161 +522,13 @@ public class StarlingActivity extends NativeActivity {
     }
 
     private void showFirstFrame() {
-        NativeMods.started(this);
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 drawn = true;
                 getWindow().getDecorView().invalidate();
-                askModPermissions();
             }
         });
-    }
-
-    /** Android's permission for each of build.json's (native_mod_permissions.py), and its words. */
-    private static final String[][] MOD_PERMISSION_NAMES = {
-        {"microphone", Manifest.permission.RECORD_AUDIO, "the microphone"},
-    };
-
-    /** Asked once a run, on the first frame (firstFrame may come twice). */
-    private boolean modPermissionsAsked;
-
-    /**
-     * The permissions the running build's mods need and do not hold (NativeMods.permissions),
-     * asked once the game shows, saying which mod wants what: Continue hands them to Android's own
-     * question; Not now leaves them, and this build does not ask again. The mods themselves are as
-     * their makers wrote them: a mod that opens the microphone without the permission only gets
-     * silence.
-     */
-    private void askModPermissions() {
-        if (modPermissionsAsked || modBuild == null || NativeMods.permissionsDeclined(modBuild)) {
-            return;
-        }
-        modPermissionsAsked = true;
-        Map<String, List<String>> wanted = NativeMods.permissions(modBuild);
-        final List<String> missing = new ArrayList<>();
-        StringBuilder said = new StringBuilder();
-        for (String[] known : MOD_PERMISSION_NAMES) {
-            List<String> mods = wanted.get(known[0]);
-            if (mods == null || checkSelfPermission(known[1]) == PackageManager.PERMISSION_GRANTED) {
-                continue;
-            }
-            missing.add(known[1]);
-            if (said.length() > 0) {
-                said.append('\n');
-            }
-            said.append(modNames(mods)).append(mods.size() == 1 ? " wants " : " want ")
-                    .append(known[2]).append('.');
-        }
-        if (missing.isEmpty()) {
-            return;
-        }
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("A native mod needs a permission")
-                .setMessage(said + "\n\nAndroid asks you next. You can change it later in the "
-                        + "app's settings.")
-                .setPositiveButton("Continue", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        requestPermissions(missing.toArray(new String[0]), MOD_PERMISSIONS);
-                    }
-                })
-                .setNegativeButton("Not now", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        NativeMods.declinePermissions(modBuild);
-                    }
-                })
-                .show();
-    }
-
-    /**
-     * The player's own build server for native mods (game/native_builds.rs): only ever typed here,
-     * so no link or file can choose it. The game it sends back runs inside this app, so the warning
-     * says that plainly.
-     */
-    public void askBuildServer(final String current) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                showBuildServerDialog(current);
-            }
-        });
-    }
-
-    private void showBuildServerDialog(String current) {
-        final EditText address = new EditText(this);
-        address.setSingleLine(true);
-        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        address.setHint("https://example.com");
-        address.setText(current);
-        float dp = getResources().getDisplayMetrics().density;
-        // The game's own look, not the system's white box; the keyboard leaves the warning in view.
-        GradientDrawable box = new GradientDrawable();
-        box.setColor(0xFF1E2127);
-        box.setCornerRadius(8 * dp);
-        box.setStroke(Math.round(dp), 0xFF8B7CF6);
-        address.setBackground(box);
-        address.setTextColor(0xFFFFFFFF);
-        address.setHintTextColor(0xFF8A8F98);
-        address.setPadding(Math.round(12 * dp), Math.round(10 * dp), Math.round(12 * dp),
-                Math.round(10 * dp));
-        address.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_DONE);
-        FrameLayout frame = new FrameLayout(this);
-        int side = Math.round(20 * dp);
-        frame.setPadding(side, 0, side, 0);
-        frame.addView(address);
-
-        String warning = "WE TAKE NO RESPONSIBILITY FOR OTHER BUILD SERVERS";
-        SpannableStringBuilder message = new SpannableStringBuilder(warning);
-        message.setSpan(new ForegroundColorSpan(0xFFFF5252), 0, warning.length(),
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        message.setSpan(new RelativeSizeSpan(1.3f), 0, warning.length(),
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        message.setSpan(new StyleSpan(Typeface.BOLD), 0, warning.length(),
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        message.append("\n\nThe game another server sends back runs inside Starling with full "
-                + "access, including your worlds and your signed-in account. Only use a server you "
-                + "run yourself or fully trust. Your native mods are the only files sent to it.");
-
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Build server")
-                .setMessage(message)
-                .setView(frame)
-                .setPositiveButton("Use this server", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        String typed = address.getText().toString();
-                        if (NativeMods.isBuildServer(typed)) {
-                            NativeMods.chooseBuildServer(StarlingActivity.this, typed);
-                        } else {
-                            Toast.makeText(StarlingActivity.this,
-                                    "That is not an https:// address. Nothing changed.",
-                                    Toast.LENGTH_LONG).show();
-                        }
-                    }
-                })
-                .setNeutralButton("Use Starling's", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        NativeMods.chooseBuildServer(StarlingActivity.this, null);
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    /** Mod ids as the player reads them: "voicechat" is Voicechat, two are "A and B". */
-    private static String modNames(List<String> ids) {
-        StringBuilder names = new StringBuilder();
-        for (int i = 0; i < ids.size(); i++) {
-            String id = ids.get(i);
-            if (i > 0) {
-                names.append(i == ids.size() - 1 ? " and " : ", ");
-            }
-            names.append(id.isEmpty() ? id : Character.toUpperCase(id.charAt(0)) + id.substring(1));
-        }
-        return names.toString();
     }
 
     /** Whether the player allowed the Starling folder (they may have just come back from it). */

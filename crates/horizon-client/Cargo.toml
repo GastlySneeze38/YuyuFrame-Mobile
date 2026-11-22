@@ -28,6 +28,8 @@ horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
+# What a launcher asks of the game (the pause menu's Launcher row, game/interface/screens.rs).
+horizon-engine-api = { path = "../horizon-engine-api" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }

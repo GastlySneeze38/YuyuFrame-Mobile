@@ -1671,21 +1671,11 @@ impl Game<'_> {
     #[cfg(not(target_os = "android"))]
     pub(super) fn list_copied_native_mods(&mut self) {}
 
-    /// Installed mod `i` was turned on or off on the Mods page: a native one changes which build
-    /// the next start runs (`native_builds.rs`). Only a phone has builds.
-    #[cfg(target_os = "android")]
-    pub(super) fn mod_toggled(&mut self, i: usize) {
-        self.native_mod_toggled(i);
-    }
-    #[cfg(not(target_os = "android"))]
+    /// Installed mod `i` was turned on or off on the Mods page. Starling's phone built another game
+    /// with the native ones; YuyuFrame's runs no downloaded code (Google Play), so nothing follows.
     pub(super) fn mod_toggled(&mut self, _i: usize) {}
 
-    /// A button of the Mods page's game with native mods (`native_builds.rs`).
-    #[cfg(target_os = "android")]
-    pub(super) fn native_game_button(&mut self, act: mod_list::NativeGameAct) {
-        self.native_game_act(act);
-    }
-    #[cfg(not(target_os = "android"))]
+    /// A button of the Mods page's game with native mods: none on YuyuFrame's phone (above).
     pub(super) fn native_game_button(&mut self, _act: mod_list::NativeGameAct) {}
 
     /// A native mod the catalog just put in the folder: its row on the Mods page, with Compile.
@@ -1698,7 +1688,6 @@ impl Game<'_> {
             &self.settings.mods.installed,
         );
         self.settings.mods.installed.extend(unbuilt);
-        self.offer_compile();
     }
 
     /// Lists the installed mods on the Mods page. Content mods load with the resources
@@ -1779,8 +1768,6 @@ impl Game<'_> {
         }
         // A mod with a native version built in says so instead, and isn't news.
         self.list_native_mods();
-        #[cfg(target_os = "android")]
-        self.list_native_builds_row();
         self.sync_native_switches();
         let built = self.mods.native.built();
         let built_mods = native_mods_detail(built);
@@ -1792,8 +1779,6 @@ impl Game<'_> {
         let unbuilt = not_built(&native_dir, built, &self.settings.mods.installed);
         self.settings.mods.installed.extend(unbuilt);
         self.mods.report_refusals(&mut self.settings.mods.installed);
-        #[cfg(target_os = "android")]
-        self.offer_compile();
         self.settings
             .mods
             .apply_dependency_notices(&self.mods.load_notices.lock().unwrap());

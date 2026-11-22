@@ -1753,8 +1753,6 @@ struct Game<'a> {
     files_offer: files_offer::FilesOffer,
     #[cfg(target_os = "android")]
     update_offer: update_offer::UpdateOffer,
-    #[cfg(target_os = "android")]
-    native_builds: native_builds::NativeBuilds,
     /// Bedrock Inventory with the pointer on its inventory window: the item tab the other window
     /// shows (the creative screen's selected tab is then the Survival Inventory, so every click
     /// works as it does there).
@@ -4912,7 +4910,6 @@ impl Game<'_> {
     fn draw_phone_offers(&mut self, batch: &mut HudBatch) {
         self.draw_files_offer(batch);
         self.draw_update_offer(batch);
-        self.draw_native_builds(batch);
     }
     #[cfg(not(target_os = "android"))]
     fn draw_phone_offers(&mut self, _batch: &mut HudBatch) {}
@@ -11274,8 +11271,6 @@ impl<'a> Game<'a> {
             files_offer: Default::default(),
             #[cfg(target_os = "android")]
             update_offer: Default::default(),
-            #[cfg(target_os = "android")]
-            native_builds: Default::default(),
             bedrock_items: None,
             bedrock_held: false,
             creative_hovered: None,
