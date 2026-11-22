@@ -30,6 +30,10 @@ Les options du contrat de lancement d'Horizon (`docs/api/launch.md`) :
   `access_token`, `user_type` (`msa`), `xuid`. Nom imprévisible, créé neuf, lisible par son seul
   propriétaire ; le moteur le lit une fois puis l'efface, et refuse un fichier de plus de deux
   minutes. Le launcher l'efface lui-même si le jeu n'a pas démarré.
+- **Ligne « Launcher » du menu pause** : `Launch::launcher_button` pose `HORIZON_LAUNCHER_BUTTON=1`.
+  Le menu pause du jeu gagne alors une ligne qui sauvegarde le monde et ferme le jeu, pour revenir
+  au launcher qui l'a lancé (resté ouvert dessous sur Android). Le launcher, de son côté, peut
+  ramener l'écran du jeu au premier plan (YuyuFrame : `GamePlugin.resume`).
 - **Android** : `horizon-args.txt` dans les fichiers privés de l'appli (`Launch::write_args_file`),
   lu par l'écran du jeu comme sa ligne de commande : une option par ligne, ou `NOM=valeur` pour une
   variable d'environnement (`A-Z`, `0-9`, `_`). Écrit d'un coup ; un saut de ligne dans une valeur
@@ -87,7 +91,22 @@ mods natifs, packs de ressources, shaders, mondes (`saves`), captures, skins, et
 (`options.txt`, `horizon-graphics.txt`, `horizon-touch.json`, `horizon-keypad.json`, en lecture
 de liste seulement). Un nom est un seul élément de chemin (ni `..`, ni séparateur, ni point en
 tête) et un lien symbolique est refusé. Opérations : `list`, `remove`, `rename` (jamais par-dessus
-un fichier), `create_dir`, `import` (copie sans écraser : `nom (2).zip`…).
+un fichier), `create_dir`, `import` / `import_from` (copie sans écraser : `nom (2).zip`… ;
+`import_from` lit n'importe quel flux, par exemple les octets d'un fichier choisi dans le
+sélecteur d'Android, qui ne donne que des adresses `content://`).
+
+## Ce que le moteur ne charge pas (Play Store)
+
+Le Play Store interdit de télécharger du code exécutable hors de lui (règle « Device and Network
+Abuse ») ; seul passe le code qui tourne dans une machine virtuelle ou un interpréteur sans accès
+direct à Android. Donc :
+
+- **chargés** : mods de contenu `.hmod`, mods WebAssembly (bac à sable wasmtime, qui ne voit que
+  l'API du jeu), packs de ressources et de données, shaders `.hshader` ;
+- **retirés du moteur** : les **mods natifs** (bibliothèques `.so` compilées par un service et
+  chargées à la place du jeu : `NativeMods.java`, `native_builds.rs`, l'ouverture de `native-libs`
+  dans `android_lib.rs`) et les **pilotes GPU personnalisés** (`.adpkg`, chargés par adrenotools).
+  Un `.hnmod` ou un `.adpkg` ouvert avec le jeu est refusé.
 
 ## Pas encore dans l'API
 
@@ -104,5 +123,14 @@ un fichier), `create_dir`, `import` (copie sans écraser : `nom (2).zip`…).
   `android_display` : `ASPECTS` et clés, `skins::process_legacy_skin` / `process_cape`).
 - YuyuFrame : `Launcher-Client/Backend` (Android seulement), dépendance Git sur le dépôt public
   `YuyuFrame-Mobile`, remplacée en local par `horizon-android/` (`.cargo/config.toml` à la racine du
-  monorepo, hors du dépôt public du launcher). `minecraft/launcher/horizon/android.rs` lance par
-  `launch`. **Publier `YuyuFrame-Mobile` avant le launcher**, sinon sa CI ne trouve pas la crate.
+  monorepo, hors du dépôt public du launcher). **Publier `YuyuFrame-Mobile` avant le launcher**,
+  sinon sa CI ne trouve pas la crate.
+  - `minecraft/launcher/horizon/android.rs` : lance par `launch` (avec la ligne « Launcher »), et
+    fait porter au joueur le skin de l'écran Skins par `skin::wear` avant chaque partie ;
+  - `minecraft/launcher/horizon/engine.rs` : commandes `horizon_engine_settings(_set)` et
+    `horizon_files_*` (import en octets bruts), `horizon_game_resume` ; refusées pendant que le jeu
+    tourne dans l'instance ;
+  - interface : onglets « Jeu sur téléphone » et « Fichiers » des paramètres d'une instance Horizon
+    (`HorizonGameTab`, `HorizonFilesTab`), mods et packs d'Horizon sur téléphone comme sur PC (sans
+    mods natifs), bouton « Revenir au jeu » pendant une partie, réglage « Ouvrir le jeu au
+    démarrage ».

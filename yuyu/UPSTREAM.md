@@ -65,6 +65,21 @@ du workspace (détail : [`API-MOTEUR.md`](API-MOTEUR.md)). Dans leur code :
 valeurs dans la crate, et `skins.rs` réexporte `process_legacy_skin` / `process_cape`, déplacées
 dedans.
 
+**Play Store (2026-11-22)** : plus de code téléchargé dans l'APK.
+
+| Fichier | Changement |
+|---|---|
+| `crates/horizon-client/src/game/starling/native_builds.rs`, `build_mining.rs` | Supprimés (builds de mods natifs et leur mini-jeu d'attente) ; appels retirés de `game.rs`, `runtime/window_handler.rs`, `starling/input_mode.rs`, `starling/touch/mod.rs`, `modding/mods/mod.rs` |
+| `crates/horizon-client/src/android_lib.rs` | Plus d'ouverture des bibliothèques de `native-libs` au démarrage |
+| `crates/horizon-client/src/android.rs` | `on_create` sans relais vers un build téléchargé (`STARLING_GAME_LIBRARY`), plus de `set_native_libs_opened` ; chargeur de pilotes GPU (adrenotools, `load_custom_driver`) retiré |
+| `crates/horizon-client/src/import.rs`, `game/starling/imports.rs` | `.adpkg` lu comme fichier inconnu, mod natif refusé avec un message |
+| `crates/horizon-client-render/src/graphics_ui.rs` | Ligne « GPU Drivers... » jamais affichée |
+| `packaging/android/java/.../StarlingActivity.java`, `NativeMods.java` (supprimé) | `loadGame` charge toujours la bibliothèque de l'APK ; demande de permissions des mods et serveur de build retirés |
+
+**Ligne « Launcher » du menu pause** : `crates/horizon-client/src/game/interface/screens.rs`
+(ligne 31, si `HORIZON_LAUNCHER_BUTTON=1`) ; `crates/horizon-client/Cargo.toml` dépend de
+`horizon-engine-api`.
+
 ### Ce qu'on reprendra de leur launcher
 
 Décidé fonction par fonction le 2026-11-22. Le code d'origine est au tag `v0.9.0` de leur dépôt,

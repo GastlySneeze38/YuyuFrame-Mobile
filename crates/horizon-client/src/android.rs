@@ -128,6 +128,25 @@ fn clipboard_get() -> Option<String> {
     .flatten()
 }
 
+/// The folder Android extracted the APK's libraries to (ApplicationInfo.nativeLibraryDir), where
+/// the Java launchers are.
+fn library_dir() -> Option<PathBuf> {
+    with_activity(|env, activity| {
+        let info = env
+            .call_method(
+                activity,
+                "getApplicationInfo",
+                "()Landroid/content/pm/ApplicationInfo;",
+                &[],
+            )?
+            .l()?;
+        let dir = env
+            .get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?
+            .l()?;
+        Ok(PathBuf::from(String::from(env.get_string(&dir.into())?)))
+    })
+}
+
 /// A file of the APK's assets/, whole.
 fn asset(name: &str) -> Option<Vec<u8>> {
     let name = std::ffi::CString::new(name).ok()?;
