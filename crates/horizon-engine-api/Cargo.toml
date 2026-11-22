@@ -1,0 +1,19 @@
+[package]
+name = "horizon-engine-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "What a launcher needs to drive the engine, with no screen: its launch line, the settings and skins it reads from the game folder, the wardrobe and its preview, the files a player may see"
+
+# Light on purpose: a launcher links this crate into its own build (YuyuFrame's Tauri backend does), so
+# nothing of the engine's renderer, world or windowing comes in. The engine depends on it for the file
+# names and the skin layouts both sides must agree on.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

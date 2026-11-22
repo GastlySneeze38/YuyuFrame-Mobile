@@ -12,12 +12,12 @@ use std::io::Read;
 use std::path::Path;
 
 /// The folder beside options.txt holding the skins to choose from.
-pub const DIR: &str = "skins";
+pub const DIR: &str = horizon_engine_api::contract::SKINS;
 const SKIN: &str = "skin";
 const MODEL: &str = "model";
 /// Each profile's choice, beside options.txt: `{"<profile key>": {"skin": "a.png", "model":
 /// "slim"}}`, `skin` null for the profile's own (its account's, else the default one).
-pub const PROFILES: &str = "horizon-skins.json";
+pub const PROFILES: &str = horizon_engine_api::contract::SKIN_PROFILES;
 /// The largest skin file read for an upload, as Horizon Android's import takes.
 const MAX_UPLOAD: u64 = 1024 * 1024;
 

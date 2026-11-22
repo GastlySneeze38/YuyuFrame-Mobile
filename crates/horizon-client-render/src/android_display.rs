@@ -30,26 +30,16 @@ impl DisplayOption {
         Self::InterfaceVertical,
     ];
 
-    pub const ASPECTS: [(i32, i32, &'static str); 11] = [
-        (0, 0, "Native"),
-        (1, 1, "1:1"),
-        (5, 4, "5:4"),
-        (4, 3, "4:3"),
-        (3, 2, "3:2"),
-        (16, 10, "16:10"),
-        (16, 9, "16:9"),
-        (18, 9, "18:9"),
-        (39, 18, "19.5:9"),
-        (20, 9, "20:9"),
-        (21, 9, "21:9"),
-    ];
+    /// Shared with a launcher (`horizon-engine-api`, `settings`), which writes these choices.
+    pub const ASPECTS: [(i32, i32, &'static str); 11] = horizon_engine_api::settings::ASPECTS;
 
     pub const fn key(self) -> &'static str {
+        use horizon_engine_api::settings::keys;
         match self {
-            Self::Cutout => "starlingDisplayCutout",
-            Self::Orientation => "starlingDisplayOrientation",
-            Self::Rotation => "starlingDisplayRotation",
-            Self::Aspect => "starlingDisplayAspect",
+            Self::Cutout => keys::CUTOUT,
+            Self::Orientation => keys::ORIENTATION,
+            Self::Rotation => keys::ROTATION,
+            Self::Aspect => keys::ASPECT,
             Self::SafeHorizontal => "starlingSafeHorizontal",
             Self::SafeVertical => "starlingSafeVertical",
             Self::InterfaceHorizontal => "starlingInterfaceHorizontal",

@@ -58,6 +58,13 @@ Restent des mentions de `launcher/` dans des commentaires et la doc d'Horizon (`
 effet. Le catalogue en jeu reviendra par l'API générique (voir ci-dessous) : son code d'origine
 est au tag `v0.9.0`, dans `launcher/src/browser/` et `crates/starling-catalog/`.
 
+**L'API générique du moteur** (2026-11-22) : nouvelle crate `crates/horizon-engine-api`, membre
+du workspace (détail : [`API-MOTEUR.md`](API-MOTEUR.md)). Dans leur code :
+`crates/horizon-client-render/Cargo.toml` en dépend ; `graphics.rs` (`FILE`), `own_skin.rs`
+(`DIR`, `PROFILES`), `android_display.rs` (`ASPECTS`, clés des options d'affichage) prennent leurs
+valeurs dans la crate, et `skins.rs` réexporte `process_legacy_skin` / `process_cape`, déplacées
+dedans.
+
 ### Ce qu'on reprendra de leur launcher
 
 Décidé fonction par fonction le 2026-11-22. Le code d'origine est au tag `v0.9.0` de leur dépôt,

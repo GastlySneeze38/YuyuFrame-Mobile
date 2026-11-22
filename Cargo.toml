@@ -1,6 +1,7 @@
 [workspace]
 exclude = ["crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "third_party/android-activity", "tools/fixtures/paper-trace-mod"]
 members = [
+    "crates/horizon-engine-api",
     "crates/horizon-guest-stack",
     "crates/horizon-mod-vocab",
     "crates/horizon-game-discovery",

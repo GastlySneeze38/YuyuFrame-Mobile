@@ -4,7 +4,7 @@
 //! player makes here depart from it.
 use std::{fs, path::Path};
 
-pub const FILE: &str = "horizon-graphics.txt";
+pub const FILE: &str = horizon_engine_api::contract::GRAPHICS;
 /// Written beside it before a window's HDR output is switched on, naming the graphics driver it
 /// starts on ([`hdr_marker_text`]), and removed once the first HDR frame is presented. Found at
 /// the next start, it means HDR output took the game down there: HDR output is held back on

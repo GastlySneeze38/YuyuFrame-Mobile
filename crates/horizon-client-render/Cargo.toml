@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer, the HUD, menus and settings; no gameplay"
 
 [dependencies]
+# What a launcher writes for the engine (file names, settings keys, skin layouts): one source for both.
+horizon-engine-api = { path = "../horizon-engine-api" }
 horizon-guest-stack = { path = "../horizon-guest-stack" }
 # The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
 horizon-hooks = { path = "../horizon-hooks" }
