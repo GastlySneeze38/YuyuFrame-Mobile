@@ -6445,12 +6445,6 @@ impl Game<'_> {
                 .filter(|_| self.settings.file.bool("modelPart_cape"))
                 .filter(|c| self.again_skin(c))
                 .cloned();
-            #[cfg(target_os = "android")]
-            let cape = if self.settings.file.bool("modelPart_cape") {
-                self.wardrobe_cape(cape)
-            } else {
-                None
-            };
             let kind = self.player_model.as_ref().map(|m| m.kind.clone());
             let skin_3d = kind
                 .as_ref()

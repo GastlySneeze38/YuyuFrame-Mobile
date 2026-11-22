@@ -23,17 +23,6 @@ pub(super) const CONTROL_HELP: &[&str] = &[
     "graphics-set KEY VALUE         set a Horizon graphics setting (resolutionScale 25..200, presentMode, workers...), apply and save it",
 ];
 
-/// The catalog's shelf for a page's Catalog button.
-#[cfg(target_os = "android")]
-fn catalog_shelf(shelf: horizon_client::options_ui::CatalogShelf) -> starling_catalog::Shelf {
-    use horizon_client::options_ui::CatalogShelf;
-    match shelf {
-        CatalogShelf::Mods => starling_catalog::Shelf::Mods,
-        CatalogShelf::ResourcePacks => starling_catalog::Shelf::ResourcePacks,
-        CatalogShelf::ShaderPacks => starling_catalog::Shelf::ShaderPacks,
-    }
-}
-
 /// Starling: on a phone a menu over the world (pause, inventory, ...) draws at most 60 frames a
 /// second. A paused game's menu draws its kept backdrop (`menu_blur_cache`) so cheaply that it
 /// ran at 300+ FPS, warming the phone for nothing. A computer keeps its limit.
@@ -227,11 +216,9 @@ impl Game<'_> {
         let ui = &mut self.ui.options;
         // The game puts the skin on (game/own_skin.rs).
         ui.skin_page = true;
-        ui.wardrobe_enabled = cfg!(target_os = "android");
         ui.profile_name = horizon_client::accounts::player_name();
         ui.profile_key = horizon_client::accounts::player_key();
         ui.skin_cloud = horizon_client::accounts::skin_cloud();
-        ui.offer_catalog();
         ui.open_at(!from_title && self.title.is_none(), page);
         ui.minecart_improvements = minecart_improvements;
         ui.languages = lang::available(&[&self.pack.source]);
@@ -301,8 +288,6 @@ impl Game<'_> {
         self.ui
             .options
             .draw_contents(&self.settings, batch, &self.gui.atlas, cursor);
-        #[cfg(target_os = "android")]
-        self.draw_wardrobe_preview(batch);
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
         self.ui
             .options
@@ -592,9 +577,8 @@ impl Game<'_> {
                         browser.download(i, &dir, horizon_core::VANILLA_VERSION);
                     }
                 }
-                #[cfg(target_os = "android")]
-                Event::OpenCatalog(shelf) => self.open_catalog_on(catalog_shelf(shelf)),
-                #[cfg(not(target_os = "android"))]
+                // YuyuFrame: Starling's catalog is removed with Horizon's desktop launcher, whose
+                // browser it compiled; no page offers it (`offer_catalog` is never called).
                 Event::OpenCatalog(_) => {}
                 Event::DataPacks(ids) => {
                     let resources = self.vanilla_root();
@@ -697,34 +681,14 @@ impl Game<'_> {
             match action {
                 SkinAction::Name(name) => self.keep_player_name(&name),
                 SkinAction::Choice(choice) => self.choose_own_skin(choice),
-                SkinAction::Cape(choice) => {
-                    #[cfg(target_os = "android")]
-                    self.choose_own_cape(choice);
-                    #[cfg(not(target_os = "android"))]
-                    let _ = choice;
-                }
-                SkinAction::PickCape => {
-                    #[cfg(target_os = "android")]
-                    self.pick_wardrobe_png(crate::ha_launcher::skins::library::Kind::Cape);
-                }
-                SkinAction::LoadAccountCapes =>
-                {
-                    #[cfg(target_os = "android")]
-                    if let Err(error) = self.account_capes(None) {
-                        self.ui.options.skin_warning(error);
-                    }
-                }
-                SkinAction::SaveWardrobe { cape, skin } => {
-                    #[cfg(target_os = "android")]
-                    self.save_wardrobe(cape, skin);
-                    #[cfg(not(target_os = "android"))]
-                    let _ = (cape, skin);
-                }
+                // YuyuFrame: the wardrobe is off (`wardrobe_enabled` stays false), so its own
+                // actions never come.
+                SkinAction::Cape(_)
+                | SkinAction::PickCape
+                | SkinAction::LoadAccountCapes
+                | SkinAction::SaveWardrobe { .. }
+                | SkinAction::OpenWardrobeFolder => {}
                 SkinAction::OpenFolder => self.open_game_folder(&Self::skins_dir()),
-                SkinAction::OpenWardrobeFolder => {
-                    #[cfg(target_os = "android")]
-                    self.open_game_folder(&Self::wardrobe_root().join("images"));
-                }
                 SkinAction::PickFile => self.pick_skin_file(),
                 SkinAction::ElyBy(on) => self.keep_elyby(on),
                 SkinAction::Upload(choice) => {

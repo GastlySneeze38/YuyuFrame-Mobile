@@ -90,9 +90,8 @@ READERS = {
     ],
     "horizon-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
     "horizon-world": ["crates/horizon-core", "Cargo.lock"],
-    # Starling's own crates: the account tests read the research lock, the catalog its launcher's sources.
+    # Starling's own crate: the account tests read the research lock.
     "starling-account": ["research-lock.json"],
-    "starling-catalog": ["launcher/src"],
     # Commands (tokens, icons, package), not tests: listed so the scan finds nothing unexplained.
     "xtask": [
         "crates/horizon-client/src", "crates/horizon-mod-vocab/src/hooks", "crates/horizon-perf/web",

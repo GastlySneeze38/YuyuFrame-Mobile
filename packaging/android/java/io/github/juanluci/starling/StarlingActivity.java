@@ -79,8 +79,6 @@ public class StarlingActivity extends NativeActivity {
     private static final int PICK_HORIZON = 2;
     /** Android's answer to the permissions the running build's mods need. */
     private static final int MOD_PERMISSIONS = 3;
-    /** The launcher's file picker (Horizon Android's): its answer goes to nativeDocumentResult. */
-    private static final int PICK_DOCUMENT = 4101;
 
     /** The build with native mods this game runs (loadGame), or null for the APK's own. */
     private File modBuild;
@@ -148,9 +146,6 @@ public class StarlingActivity extends NativeActivity {
 
     /** Android took back the pointer the game had captured (android_lib.rs). */
     private static native void onPointerCaptureLost();
-
-    /** The launcher's picker answered: its request, its result code and the document (android_lib.rs). */
-    private native void nativeDocumentResult(int request, int result, String uri);
 
     /** The game holds the pointer (capturePointer); on the UI thread only. */
     private boolean pointerWanted;
@@ -484,9 +479,6 @@ public class StarlingActivity extends NativeActivity {
         } else if (requestCode == PICK_HORIZON && resultCode == RESULT_OK && data != null
                 && data.getData() != null) {
             HorizonImport.start(this, data.getData());
-        } else if (requestCode == PICK_DOCUMENT) {
-            nativeDocumentResult(requestCode, resultCode,
-                    data == null || data.getData() == null ? null : data.getData().toString());
         }
     }
 
@@ -790,25 +782,6 @@ public class StarlingActivity extends NativeActivity {
         });
     }
 
-    /**
-     * The launcher's file picker (Horizon Android's): the document chosen goes to the launcher,
-     * which reads it through the content resolver and puts it where it belongs.
-     */
-    public void pickDocument() {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("*/*");
-                try {
-                    startActivityForResult(intent, PICK_DOCUMENT);
-                } catch (ActivityNotFoundException e) {
-                    nativeDocumentResult(PICK_DOCUMENT, RESULT_CANCELED, null);
-                }
-            }
-        });
-    }
 
     /** The system's file picker; the file chosen goes to the game's import inbox. */
     public boolean pickFile() {

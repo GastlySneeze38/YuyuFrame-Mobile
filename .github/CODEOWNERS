@@ -9,8 +9,4 @@
 /crates/horizon-release-sign/            @horizon-rust/council
 /crates/horizon-server/src/update.rs     @horizon-rust/council
 /crates/horizon-server/Cargo.toml        @horizon-rust/council
-/launcher/src/signed.rs                  @horizon-rust/council
-/launcher/src/backend.rs                 @horizon-rust/council
-/launcher/links.json                     @horizon-rust/council
-/launcher/Cargo.toml                     @horizon-rust/council
 /packaging/                              @horizon-rust/council

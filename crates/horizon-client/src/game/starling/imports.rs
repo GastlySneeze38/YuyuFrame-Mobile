@@ -647,8 +647,6 @@ fn pixels(ui: &mut Ui<'_>, art: &[&str], cx: f32, cy: f32, cell: f32) {
 impl super::Game<'_> {
     /// The inbox, a few times a second, from the frame; the banner's sounds.
     pub(super) fn poll_imports(&mut self) {
-        #[cfg(target_os = "android")]
-        self.poll_wardrobe_import();
         if !self.button_image_wait() {
             match self.imports.poll(&self.ui.vanilla_root.clone()) {
                 Some(Kind::Resources) => self.imports.say(

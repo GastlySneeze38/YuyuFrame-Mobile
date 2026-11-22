@@ -1957,9 +1957,7 @@ impl Game<'_> {
         self.android_sync_pointer();
         let point = [t.location.x as f32, t.location.y as f32];
         if self.touch_menu_owns(t.id)
-            || (self.screen == Screen::Options
-                && (!self.mobile.ui.virtual_mouse
-                    || t.phase == TouchPhase::Started && self.on_wardrobe_preview(point)))
+            || (self.screen == Screen::Options && !self.mobile.ui.virtual_mouse)
         {
             let [w, h] = self.touch_size();
             let slop = horizon_client::touch::slop(w as f32, h as f32);

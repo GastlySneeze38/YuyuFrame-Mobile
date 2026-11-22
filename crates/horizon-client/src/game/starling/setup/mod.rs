@@ -609,6 +609,12 @@ impl Loading {
             {
                 accounts::download_files()
             }
+            // YuyuFrame (horizon-android/yuyu/UPSTREAM.md) : le launcher a déjà connecté le
+            // compte et l'a passé au jeu (--session-file) ; on ne redemande ni compte ni choix,
+            // les fichiers se téléchargent comme après « Play offline ».
+            (Files::Missing, _) if accounts::launched_by_yuyuframe() && !self.setup.cancelled => {
+                accounts::download_files()
+            }
             _ => {}
         }
     }

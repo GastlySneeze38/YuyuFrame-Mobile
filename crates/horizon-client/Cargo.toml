@@ -112,15 +112,10 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 # file manager, the file picker, the clipboard (cpal's version of jni).
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 jni = "0.21.1"
-# The mods, resource packs and shader packs catalog (game/mod_catalog.rs).
-starling-catalog = { path = "../starling-catalog" }
-# Horizon Android's launcher (ha_launcher/): the accounts it lists and signs in, the links it
-# checks, and the skins it reads and draws in the wardrobe.
+# Starling's accounts, which the game lists and signs in (accounts.rs, title/account.rs).
+# YuyuFrame: Starling's launcher (ha_launcher/) and Horizon's desktop launcher (launcher/, which
+# starling-catalog compiled for the in-game catalog) are removed, with the crates only they used.
 starling-account = { path = "../starling-account" }
-# Its proxy settings and the Java mods' checks, as Horizon's launcher shares them.
-horizon-port-pack = { path = "../horizon-port-pack" }
-url = "2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 [target.'cfg(windows)'.dependencies]
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).

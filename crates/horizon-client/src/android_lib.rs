@@ -126,18 +126,6 @@ extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onStorage(
     }
 }
 
-/// `StarlingActivity.nativeDocumentResult`: the launcher's file picker answered (request 4101).
-#[unsafe(no_mangle)]
-extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_nativeDocumentResult(
-    env: jni::JNIEnv,
-    activity: jni::objects::JObject,
-    request: i32,
-    result: i32,
-    uri: jni::objects::JString,
-) {
-    horizon_client::ha_launcher::document_result(env, activity, request, result, uri);
-}
-
 /// `StarlingActivity.onImeHeight` (packaging/android/java), called on the UI thread.
 #[unsafe(no_mangle)]
 extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onImeHeight(

@@ -802,7 +802,6 @@ impl Game<'_> {
         if self.files_offer_touch(t)
             || self.update_offer_touch(t)
             || self.native_builds_touch(t)
-            || self.catalog_touch(t)
         {
             return true;
         }
@@ -936,12 +935,6 @@ impl Game<'_> {
         self.keyboard_after_tap(t, p);
     }
 
-    /// The catalog is only on Android (`mod_catalog`): elsewhere Back has none to close.
-    #[cfg(not(target_os = "android"))]
-    fn catalog_back(&mut self) -> bool {
-        false
-    }
-
     /// Android's back key: Escape (pause, close a screen), or Done in the layout editor.
     pub(super) fn touch_back_key(&mut self, event: &KeyEvent) -> bool {
         #[cfg(target_os = "android")]
@@ -952,9 +945,7 @@ impl Game<'_> {
             return false;
         }
         if event.state == ElementState::Pressed && !event.repeat {
-            if self.catalog_back() {
-                // The catalog closes, and the page it was opened from stays.
-            } else if self.touch.editor.take().is_some() {
+            if self.touch.editor.take().is_some() {
                 self.save_touch_layout();
             } else {
                 let _ = self.touch_key_tap(KeyCode::Escape);
@@ -1193,10 +1184,6 @@ impl Game<'_> {
     }
 
     pub(super) fn text_context(&mut self) -> Option<&'static str> {
-        #[cfg(target_os = "android")]
-        if self.catalog_typing() {
-            return Some("catalog");
-        }
         // A server's dialog takes the input over whatever is under it (`text_field_focused`).
         if self.dialog_open() {
             return self.dialog_typing().then_some("dialog");
@@ -1288,13 +1275,7 @@ impl Game<'_> {
         let batch = self.interface_batch(self.touch_size());
         let (x, y) = self.interface_point(p, batch.scale);
         // A custom button's canvas: a finger paints, it doesn't scroll.
-        if self.screen == Screen::Options
-            && (self.ui.options.painting()
-                || self
-                    .ui
-                    .options
-                    .wardrobe_preview_at((batch.width, batch.height), (x, y)))
-        {
+        if self.screen == Screen::Options && self.ui.options.painting() {
             return true;
         }
         // The title screen's player turns under the finger whichever way it moves.
@@ -1306,18 +1287,6 @@ impl Game<'_> {
             return self.creative_screen.inside_scrollbar(x - ox, y - oy);
         }
         false
-    }
-
-    #[cfg(target_os = "android")]
-    pub(super) fn on_wardrobe_preview(&self, p: [f32; 2]) -> bool {
-        if self.screen != Screen::Options {
-            return false;
-        }
-        let batch = self.interface_batch(self.touch_size());
-        self.ui.options.wardrobe_preview_at(
-            (batch.width, batch.height),
-            self.interface_point(p, batch.scale),
-        )
     }
 
     /// Whether a finger landing at window pixel `p` is on a button of the options (a cycle button,

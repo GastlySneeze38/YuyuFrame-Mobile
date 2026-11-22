@@ -52,10 +52,6 @@ class Targets(unittest.TestCase):
         ):
             self.assertNotRegex(body(path, signature), r"#\s*\[\s*cfg|\bcfg\s*!", signature)
 
-    def test_the_catalog_has_the_file_horizon_mixins_looks_for(self):
-        # It doesn't follow the #[path] in starling-catalog: E_INVALID_PATH for every native mod.
-        self.assertTrue((ROOT / "crates/starling-catalog/src/launcher/browser.rs").is_file())
-
     def test_remote_send_state_does_not_log(self):
         text = body("crates/horizon-client/src/game/network/remote/mod.rs", "fn remote_send_state(")
         self.assertNotIn("log::", text)

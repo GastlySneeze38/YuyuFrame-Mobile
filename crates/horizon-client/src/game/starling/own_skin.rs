@@ -3,8 +3,9 @@
 //! atlas's skin slots, where the local player's model (first and third person, the inventory's)
 //! and the player list's head take it in place of the profile's skin (`update_remote_skins`).
 //! Each profile (Microsoft, Ely.by, offline) wears its own choice; a Microsoft account can upload
-//! it to its profile and an Ely.by account changes its own on ely.by, as in Horizon Android's
-//! wardrobe.
+//! it to its profile and an Ely.by account changes its own on ely.by.
+//! YuyuFrame: Starling's Android wardrobe (own_skin/wardrobe.rs, over its launcher's skin library)
+//! is removed; the Skin page is the one other platforms have.
 use super::Game;
 use horizon_client::{
     hud::HudBatch,
@@ -24,10 +25,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "android")]
-#[path = "own_skin/wardrobe.rs"]
-mod wardrobe;
-
 /// The own skin's name in the atlas: one skin slot, written again when the skin changes.
 const LOCATION: &str = "horizon/own_skin";
 
@@ -39,8 +36,6 @@ const TITLE_TURN_PER_PIXEL: f32 = 2.0;
 /// The chosen skin and its image, read on first use.
 #[derive(Default)]
 pub(in crate::game) struct OwnSkin {
-    #[cfg(target_os = "android")]
-    wardrobe: wardrobe::Wardrobe,
     loaded: bool,
     choice: SkinChoice,
     /// The chosen skin's 64x64 RGBA; None for the default one.
@@ -383,9 +378,6 @@ impl Game<'_> {
     /// Skin Customization's Choose a File...: the system's picker, whose file comes through the
     /// import inbox (`own_skin_imported`).
     pub(in crate::game) fn pick_skin_file(&mut self) {
-        #[cfg(target_os = "android")]
-        self.pick_wardrobe_png(crate::ha_launcher::skins::library::Kind::Skin);
-        #[cfg(not(target_os = "android"))]
         if !horizon_client::platform::pick_file() {
             self.ui
                 .options
@@ -454,8 +446,6 @@ impl Game<'_> {
     /// Skin Customization's account rows follow the playing profile and its upload.
     pub(in crate::game) fn show_skin_cloud(&mut self) {
         self.ui.options.skin_cloud = horizon_client::accounts::skin_cloud();
-        #[cfg(target_os = "android")]
-        self.show_wardrobe();
     }
 
     /// Skin Customization's upload: the chosen skin, written anew, to the playing Microsoft
@@ -579,8 +569,6 @@ impl Game<'_> {
             return;
         };
         let mut mob = player.mob.clone();
-        #[cfg(target_os = "android")]
-        self.dress_wardrobe_preview(&mut mob);
         // The world's mob data once it loaded, else the title's own (only the model is drawn).
         let data = if self.res.rest_ready() {
             self.res.mob_data()

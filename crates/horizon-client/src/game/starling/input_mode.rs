@@ -132,7 +132,6 @@ impl Game<'_> {
         self.files_offer_touch(&touch)
             || self.update_offer_touch(&touch)
             || self.native_builds_touch(&touch)
-            || self.catalog_touch(&touch)
     }
 }
 
