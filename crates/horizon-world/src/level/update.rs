@@ -1,7 +1,8 @@
 //! `Level.setBlock`, `LevelChunk.setBlockState` and the
 //! `CollectingNeighborUpdater` that orders neighbour and shape updates.
 use super::{
-    LevelAccess, LevelEvent, Sim, classes::Class, flags, orientation::Orientation, states::BlockId,
+    LevelAccess, LevelEvent, Signals, Sim, classes::Class, flags, orientation::Orientation,
+    states::BlockId,
 };
 use crate::{fluid::FluidState, registry::BlockStateId};
 use horizon_core::{
@@ -103,6 +104,9 @@ enum Step {
 pub(crate) struct NeighborUpdater {
     stack: Vec<Update>,
     added: Vec<Update>,
+    /// State-change notices of the writes made while the updates ran, in the order of the
+    /// writes, heard once the updates have all run.
+    notices: std::collections::VecDeque<(BlockPos, BlockStateId, BlockStateId)>,
     count: i32,
 }
 
@@ -197,9 +201,6 @@ impl Update {
 }
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
-    pub fn state(&self, pos: BlockPos) -> BlockStateId {
-        self.level.block_state(pos)
-    }
     pub fn fluid_at(&self, pos: BlockPos) -> FluidState {
         self.b.fluid(self.state(pos))
     }
@@ -223,7 +224,22 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.game_event(pos, "minecraft:prime_fuse");
     }
     pub fn level_event(&mut self, id: i32, pos: BlockPos, data: i32) {
-        self.level.emit(LevelEvent::LevelEvent { id, pos, data });
+        self.level_event_from(None, id, pos, data);
+    }
+
+    pub fn level_event_from(
+        &mut self,
+        source: Option<super::LevelEventPlayer>,
+        id: i32,
+        pos: BlockPos,
+        data: i32,
+    ) {
+        self.level.emit(LevelEvent::LevelEvent {
+            id,
+            pos,
+            data,
+            source,
+        });
     }
     pub fn sound(&mut self, pos: BlockPos, sound: &std::sync::Arc<str>, volume: f32, pitch: f32) {
         self.level.emit(LevelEvent::Sound {
@@ -304,6 +320,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         };
         let new = self.state(pos);
         if new == state {
+            if update_flags & flags::UPDATE_CLIENTS != 0
+                && (!self.level.is_client_side() || update_flags & flags::UPDATE_INVISIBLE == 0)
+            {
+                self.level.send_block_updated(pos);
+            }
             if update_flags & flags::UPDATE_NEIGHBORS != 0 {
                 let old_block = self.block_of(old);
                 self.update_neighbors_at(pos, old_block);
@@ -319,8 +340,20 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
+            // Level.setBlock ends with updatePOIOnBlockStateChange (NeoForge's onBlockStateChange).
+            self.notify_state_change(pos, old, state);
         }
         true
+    }
+    /// A write inside a running neighbour update only queued its own updates, so its notice
+    /// waits until they have all run, in the order of the writes, and is queued only when
+    /// something listens; a write outside one has already run them.
+    fn notify_state_change(&mut self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+        if self.ticks.updater.count == 0 {
+            self.level.observe_block_state_change(pos, old, new);
+        } else if self.level.observes_block_state_change(old, new) {
+            self.ticks.updater.notices.push_back((pos, old, new));
+        }
     }
     /// `LevelChunk.setBlockState`: the previous state when the write happened.
     fn chunk_set_block_state(
@@ -340,15 +373,23 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.level.observe_block_changed(pos, old, state);
         let new_block = self.block_of(state);
         let block_changed = self.block_of(old) != new_block;
+        if block_changed && self.b.instance_of(old, super::classes::Class::Comparator) {
+            // LevelChunk removes the old ComparatorBlockEntity with its output.
+            self.ticks.comparator_outputs.remove(&pos);
+        }
         if block_changed && self.block_of(old) == self.b.named.moving_piston {
             // PistonMovingBlockEntity.preRemoveSideEffects -> finalTick; the
-            // block is already replaced, so only the entity goes away.
-            self.remove_moving_piston(pos);
-            // MovingPistonBlock.destroy: the extended base the head belonged to
-            // goes with it, so a broken moving piston leaves no extended piston.
-            self.destroy_moving_piston_base(pos, old);
+            // block is already replaced, so only the entity goes away. The
+            // extended base is MovingPistonBlock.destroy's, which only the
+            // player-break path calls (player_destroy). A block entity it
+            // carried (#3184) goes too, with its removal side effects.
+            if let Some(piston) = self.remove_moving_piston(pos) {
+                let side_effects = update_flags & flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0;
+                self.land_carried(pos, piston.moved_state, false, side_effects);
+            }
         } else if block_changed
             && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+                || self.level.has_native_block_entity(old)
                 || self.level.has_mod_block_entity(pos))
             && !self.keeps_block_entity(state, old)
         {
@@ -378,6 +419,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 {
             self.on_place(state, pos, old, moved);
         }
+        let landed = self.state(pos);
+        if self.block_of(landed) == new_block {
+            self.level.ensure_block_entity(pos, landed);
+        }
         Some(old)
     }
     /// `BlockState.shouldChangedStateKeepBlockEntity(oldState)`: copper chests
@@ -392,7 +437,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// piston base behind it with it when that base is extended (a head that was
     /// still moving over a base that finished extending). An unextended base, or
     /// no piston base at all, stays.
-    fn destroy_moving_piston_base(&mut self, pos: BlockPos, state: BlockStateId) {
+    pub(crate) fn destroy_moving_piston_base(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
         let Some(facing) = b.table.dir(state, b.props.facing) else {
             return;
@@ -408,7 +453,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub fn remove_block(&mut self, pos: BlockPos, moved_by_piston: bool) -> bool {
         let fluid = self.fluid_at(pos);
         let legacy = self.b.legacy_block(fluid);
-        self.set_block(pos, legacy, 3 | if moved_by_piston { 64 } else { 0 })
+        let replacement =
+            self.level
+                .adjust_remove_block(pos, self.state(pos), moved_by_piston, legacy);
+        self.set_block(pos, replacement, 3 | if moved_by_piston { 64 } else { 0 })
     }
     /// `Level.destroyBlock(pos, dropResources, null, limit)`.
     pub fn destroy_block(&mut self, pos: BlockPos, drop: bool, limit: i32) -> bool {
@@ -416,13 +464,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.b.is_air(state) {
             return false;
         }
-        // Block.spawnDestroyParticles: fire spawns none, straw beds their own.
-        let data = self.b.data(state);
-        if data.is(Class::StrawBed) {
-            self.level_event(2014, pos, state.0 as i32);
-        } else if !(data.is(Class::BaseFire) || data.is(Class::Fire) || data.is(Class::SoulFire)) {
-            self.level_event(2001, pos, state.0 as i32);
-        }
+        self.destroy_particles(pos, state);
         if drop {
             self.drop_resources(state, pos);
         }
@@ -433,6 +475,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.game_event_state(pos, "minecraft:block_destroy", state);
         }
         destroyed
+    }
+    /// `Block.spawnDestroyParticles`: fire spawns none, straw beds their own.
+    pub(crate) fn destroy_particles(&mut self, pos: BlockPos, state: BlockStateId) {
+        let data = self.b.data(state);
+        if data.is(Class::StrawBed) {
+            self.level_event(2014, pos, state.0 as i32);
+        } else if !(data.is(Class::BaseFire) || data.is(Class::Fire) || data.is(Class::SoulFire)) {
+            self.level_event(2001, pos, state.0 as i32);
+        }
     }
     pub fn drop_resources(&mut self, state: BlockStateId, pos: BlockPos) {
         // `MovingPistonBlock.getDrops`: a moving piston's loot is the loot of
@@ -508,6 +559,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     // ---- neighbour updater ----
     pub fn update_neighbors_at(&mut self, pos: BlockPos, block: BlockId) {
+        // Mods are asked here and in the skipping variant, but not in the
+        // oriented one.
+        if self.level.neighbor_notify(pos, None) {
+            return;
+        }
         let orientation = self.initial_orientation(None, None);
         self.update_neighbors_at_oriented(pos, block, orientation);
     }
@@ -525,6 +581,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             index: 0,
         });
     }
+    pub fn update_neighbors_at_except(&mut self, pos: BlockPos, block: BlockId, skip: Direction) {
+        let orientation = self.initial_orientation(None, None);
+        self.update_neighbors_at_except_oriented(pos, block, skip, orientation);
+    }
     pub fn update_neighbors_at_except_oriented(
         &mut self,
         pos: BlockPos,
@@ -532,6 +592,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         skip: Direction,
         orientation: Option<Orientation>,
     ) {
+        if self.level.neighbor_notify(pos, Some(skip)) {
+            return;
+        }
         let index = usize::from(UPDATE_ORDER[0] == skip);
         self.add_and_run(Update::Multi {
             source: pos,
@@ -636,6 +699,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
             }
         }
+        while let Some((pos, old, new)) = self.ticks.updater.notices.pop_front() {
+            self.level.observe_block_state_change(pos, old, new);
+        }
         let updater = &mut self.ticks.updater;
         updater.stack.clear();
         updater.added.clear();
@@ -682,13 +748,35 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let mut state = self.state(relative);
             if self.b.table.is(state, self.b.named.comparator) {
                 self.neighbor_changed_full(state, relative, block, false);
-            } else if self.is_redstone_conductor(state, relative) {
+            }
+            self.level
+                .observe_block_entity_neighbor(relative, state, pos);
+            if !self.b.table.is(state, self.b.named.comparator)
+                && self.is_redstone_conductor(state, relative)
+            {
                 relative = rel(relative, direction);
                 state = self.state(relative);
                 if self.b.table.is(state, self.b.named.comparator) {
                     self.neighbor_changed_full(state, relative, block, false);
                 }
+                if self.level.receives_weak_changes(relative, state) {
+                    self.level
+                        .observe_block_entity_neighbor(relative, state, pos);
+                }
             }
         }
+    }
+}
+
+impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
+    pub fn state(&self, pos: BlockPos) -> BlockStateId {
+        self.level.block_state(pos)
+    }
+}
+
+/// `Sim` reads these through its [`Signals`], so there is one implementation of each.
+impl<L: LevelAccess + ?Sized> Sim<'_, L> {
+    pub fn state(&self, pos: BlockPos) -> BlockStateId {
+        self.signals().state(pos)
     }
 }

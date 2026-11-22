@@ -38,8 +38,9 @@ shader compiler: the frame's wall time grows, its CPU time hardly. The driver's 
 after the first run on a machine: give the game a resources folder whose shaders differ to see them cold.
 
 One game per render distance, from a fresh world (seed 1234, creative), driven over horizon-ctl.
-The game runs with HORIZON_SPIKES so each slow frame logs its timed spans; the report keeps the
-slowest frames' span lines next to each scenario's figures.
+The game runs with HORIZON_SPIKES, the slow ring's threshold, and a client capture records each scenario; the
+report keeps the slowest frames' spans, read with `horizon-perf query ticks` (build it beside the game:
+`cargo build --profile fast -p horizon-perf`), next to each scenario's figures.
 
     python3 tools/pacing_bench.py --build target/fast --label main --distances 32
     python3 tools/pacing_bench.py --compare main mybranch
@@ -52,7 +53,6 @@ import argparse
 import json
 import math
 import os
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -100,14 +100,50 @@ BLOCK_ENTITIES = ["chest", "trapped_chest", "ender_chest", "oak_sign", "oak_hang
                   "sculk_shrieker", "sculk_catalyst", "jukebox", "piston", "copper_golem_statue",
                   "oak_shelf"]
 
-SPIKE_RE = re.compile(r"slow frame ([\d.]+) ms")
-GAP_RE = re.compile(r", ([\d.]+) ms before it")
+# The slow ring keeps the last 256 frames over the threshold.
+SLOW_FRAMES_MAX = 1000
+# A span shorter than this is left out of its frame's line.
+SPAN_MIN_MS = 0.5
+# How long the writer may take to close a capture after `profile stop`.
+CAPTURE_SECONDS = 120
 
 
-def spike_ms(line):
-    """A spike line's frame time plus the time before the frame (between frames)."""
-    gap = GAP_RE.search(line)
-    return float(SPIKE_RE.search(line).group(1)) + (float(gap.group(1)) if gap else 0.0)
+def frame_line(row):
+    """A `ticks` row as a line, spans with cpu after wall when it is under 90%: `slow frame 130.0 ms, cpu 18.0 ms: submit 110.0/1.0`."""
+    spans = []
+    for name, _depth, wall, cpu in row["spans"]:
+        if wall >= SPAN_MIN_MS:
+            spans.append(f"{name} {wall:.1f}/{cpu:.1f}" if cpu < wall * 0.9 else f"{name} {wall:.1f}")
+    return f"slow frame {row['wall_ms']:.1f} ms, cpu {row['cpu_ms']:.1f} ms: " + ", ".join(spans)
+
+
+def slowest_frames(reply, count, over_ms):
+    """Lines of the `count` slowest frames over `over_ms` recorded during the capture, and how many there are."""
+    rows = [row for row in reply["rows"] if not row["before_capture"] and row["wall_ms"] > over_ms]
+    rows.sort(key=lambda row: -row["wall_ms"])
+    return [frame_line(row) for row in rows[:count]], len(rows)
+
+
+def capture_frames(perf, capture, run=subprocess.run):
+    """The slow frames of a client capture, as `horizon-perf query ticks` answers; waits until the file is whole."""
+    deadline = time.time() + CAPTURE_SECONDS
+    while run([perf, "query", "meta", capture], capture_output=True).returncode:
+        if time.time() > deadline:
+            raise RuntimeError(f"{capture} was not finished in {CAPTURE_SECONDS} s")
+        time.sleep(0.5)
+    done = run([perf, "query", "ticks", capture, "--side", "client", "--worst", str(SLOW_FRAMES_MAX)],
+               capture_output=True, text=True, check=True)
+    return json.loads(done.stdout)
+
+
+def captured(control, home, perf, action):
+    """`action()` with a client capture running (frame times and spans, no samples): (its result, the capture's slow frames)."""
+    control("profile client start --no-samples")
+    try:
+        result = action()
+    finally:
+        stopped = control("profile client stop")
+    return result, capture_frames(perf, home / stopped["path"])
 
 
 def stats(frame_ms):
@@ -144,6 +180,42 @@ def record(control, action, seconds):
     return reply.get("frame_ms") or [], reply.get("cpu_ms") or []
 
 
+def living_player(control, scenario):
+    state = control("state")
+    if not state.get("player") or state["player"].get("health", 0) <= 0 or state.get("screen") == "dead":
+        raise RuntimeError(f"{scenario}: the player is dead or missing")
+    return state
+
+
+def prepare_flight(control, scenario):
+    state = living_player(control, scenario)
+    if state.get("gamemode") != "creative":
+        raise RuntimeError(f"{scenario}: creative flight is required")
+
+    def toggle():
+        # Hold each press across a tick: an instantaneous tap can be missed by movement.
+        try:
+            control("key space down")
+            control("wait 2")
+            control("key space up")
+            control("wait 2")
+            control("key space down")
+            control("wait 2")
+        finally:
+            control("key space up")
+        control("wait 2")
+
+    # `fly` changes the camera's flying flag only. Toggle through normal movement so
+    # the server knows too, and its abilities packet on a dimension change keeps it.
+    if state["player"].get("flying"):
+        toggle()
+        if living_player(control, scenario)["player"].get("flying"):
+            raise RuntimeError(f"{scenario}: could not reset creative flight")
+    toggle()
+    if not living_player(control, scenario)["player"].get("flying"):
+        raise RuntimeError(f"{scenario}: could not enable creative flight")
+
+
 def scenario(name, control, distance):
     frames, cpu = [], []
 
@@ -178,17 +250,22 @@ def scenario(name, control, distance):
         for x, y, z in targets:
             add(record(control, lambda: (control(f"tp {x} {y} {z}"),
                                          control(f"fly {x} {y} {z} {x} {y} {z} 0.1 10")), 5))
-    elif name == "nether":
-        for dim, (x, y, z) in [("the_nether", (100, 100, 100)), ("overworld", (800, 150, 800)),
-                               ("the_nether", (-300, 100, 200)), ("overworld", (-2400, 150, 1600))]:
+    elif name in ("nether", "end"):
+        prepare_flight(control, name)
+        trips = {
+            "nether": [("the_nether", (100, 100, 100)), ("overworld", (800, 150, 800)),
+                       ("the_nether", (-300, 100, 200)), ("overworld", (-2400, 150, 1600))],
+            "end": [("the_end", (100, 80, 0)), ("overworld", (900, 150, -900)),
+                    ("the_end", (-300, 80, 400)), ("overworld", (-1200, 150, 900))],
+        }
+        for dim, (x, y, z) in trips[name]:
             # Through chat, as a player types it: `command` waits on the server thread in the frame.
-            add(record(control, lambda: control(f"chat /execute in minecraft:{dim} run tp @s {x} {y} {z}"), 8))
-    elif name == "end":
-        # Before `portal` this trip makes it fail (#7702): run `portal` first.
-        for dim, (x, y, z) in [("the_end", (100, 80, 0)), ("overworld", (900, 150, -900)),
-                               ("the_end", (-300, 80, 400)), ("overworld", (-1200, 150, 900))]:
             add(record(control, lambda: control(f"chat /execute in minecraft:{dim} run tp @s {x} {y} {z}"), 8),
                 f"{dim} {x}")
+            state = living_player(control, name)
+            if state.get("dimension") != f"minecraft:{dim}" or not state["player"].get("flying"):
+                raise RuntimeError(f"{name}: expected a flying player in minecraft:{dim}, "
+                                   f"got {state.get('dimension')} (flying={state['player'].get('flying')})")
     elif name == "weather":
         x, y, z = 4000, 150, 4000
         control(f"command execute in minecraft:overworld run tp @s {x} {y} {z}")
@@ -224,6 +301,7 @@ def scenario(name, control, distance):
             add(record(control, lambda: control(f"chat /particle minecraft:{kind} {x} {y} {z + 5} 1 1 1 0.05 60 force"),
                        0.6), kind)
     elif name == "portal":
+        living_player(control, name)
         # A creative player crosses a portal after one tick in it (Player.getPortalWaitTime).
         for x, y, z in [(1200, 120, -1200), (-1800, 120, 600)]:
             control(f"command execute in minecraft:overworld run tp @s {x + 3} {y} {z}")
@@ -233,7 +311,7 @@ def scenario(name, control, distance):
             control(f"command fill {x} {y + 1} {z} {x} {y + 3} {z + 1} minecraft:nether_portal[axis=z]")
             time.sleep(1)
             add(record(control, lambda: control(f"tp {x + 0.5} {y + 1} {z + 1.0}"), 8))
-            dimension = str(control("state").get("dimension"))
+            dimension = str(living_player(control, name).get("dimension"))
             if not dimension.endswith("the_nether"):
                 raise RuntimeError(f"the portal at {x} {y} {z} led to {dimension}, not the Nether")
     elif name in ("mobs", "items", "block_entities"):
@@ -365,7 +443,7 @@ def world_change(name, control, distance, record):
 
 
 def launch(args, distance, tag):
-    """A fresh game on its title screen: (process, control, log path, log file, game dir, socket)."""
+    """A fresh game on its title screen: (process, control, log path, log file, game dir, socket, game home)."""
     import shutil
     game_dir = WORK / f"game-{args.label}-rd{distance}{tag}"
     shutil.rmtree(game_dir, ignore_errors=True)
@@ -392,7 +470,7 @@ def launch(args, distance, tag):
         command += ["--width", width, "--height", height]
     if args.offscreen:
         command.append("--offscreen")
-    env = lab.game_env(HORIZON_TELEMETRY_URL="off", HORIZON_SPIKES=str(args.spike_ms))
+    env = lab.game_env(HORIZON_SPIKES=str(args.spike_ms))
     for kv in args.env:
         k, _, v = kv.partition("=")
         env[k] = v
@@ -401,7 +479,7 @@ def launch(args, distance, tag):
     proc = subprocess.Popen(command, cwd=game_dir, env=env, stdout=log, stderr=subprocess.STDOUT)
     control = pb.Control(sock)
     pb.poll(control, lambda s: s.get("screen") == "title" and s.get("renderer"), 300)
-    return proc, control, log_path, log, game_dir, sock
+    return proc, control, log_path, log, game_dir, sock, Path(env["HORIZON_HOME"])
 
 
 def dedicated_server(args, distance, directory):
@@ -429,7 +507,10 @@ def play(args, distance, names, result):
     """One game through `names`: in a fresh world, or (`join` alone) joining a dedicated server."""
     import shutil
     joining = names == ["join"]
-    proc, control, log_path, log, game_dir, sock = launch(args, distance, "-join" if joining else "")
+    perf = Path(args.perf or Path(args.build) / "horizon-perf").resolve()
+    if not perf.exists():
+        raise SystemExit(f"{perf} is missing: build it with `cargo build --profile fast -p horizon-perf` or pass --perf")
+    proc, control, _, log, game_dir, sock, home = launch(args, distance, "-join" if joining else "")
     server = None
     try:
         if joining:
@@ -438,25 +519,21 @@ def play(args, distance, names, result):
             control(f"open {pb.WORLD} {pb.SEED} creative")
             pb.wait_loaded(control, lambda p: True, args.timeout, pb.view_chunks(distance))
         for name in names:
-            mark = log_path.stat().st_size
-            if name == "join":
+            def run_scenario():
+                if name != "join":
+                    return scenario(name, control, distance)
                 control("stats reset")
                 control(f"connect 127.0.0.1:{port}")
                 pb.wait_loaded(control, lambda p: True, args.timeout, pb.view_chunks(distance))
                 time.sleep(5)
                 reply = control("stats raw reset")
-                frames, cpu = reply.get("frame_ms") or [], reply.get("cpu_ms") or []
-            else:
-                frames, cpu = scenario(name, control, distance)
-            log.flush()
-            with log_path.open(errors="replace") as f:
-                f.seek(mark)
-                spikes = [line.strip() for line in f if "slow frame" in line]
-            spikes.sort(key=lambda line: -spike_ms(line))
+                return reply.get("frame_ms") or [], reply.get("cpu_ms") or []
+            (frames, cpu), slow = captured(control, home, perf, run_scenario)
+            slowest, slow_count = slowest_frames(slow, 12, args.spike_ms)
             entry = stats(frames)
             entry["cpu"] = stats(cpu)
-            entry["slowest_spans"] = spikes[:12]
-            entry["spike_lines"] = len(spikes)
+            entry["slowest_spans"] = slowest
+            entry["slow_frames"] = slow_count
             entry["frame_ms"] = [round(v, 2) for v in frames]
             result["scenarios"][name] = entry
             print(f"rd{distance} {name}: " + ", ".join(f"{k} {v}" for k, v in entry.items()
@@ -525,7 +602,8 @@ def main():
     parser.add_argument("--distances", default="32")
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     parser.add_argument("--timeout", type=float, default=600)
-    parser.add_argument("--spike-ms", type=float, default=20.0, help="HORIZON_SPIKES threshold (CPU ms)")
+    parser.add_argument("--perf", help="horizon-perf (default: beside the game, in --build)")
+    parser.add_argument("--spike-ms", type=float, default=20.0, help="HORIZON_SPIKES: the slow ring's threshold (frame ms)")
     parser.add_argument("--offscreen", action="store_true")
     parser.add_argument("--max-fps", type=int, help="frame cap (options.txt maxFps; default 260 = none): measures "
                         "the frame limiter's pacing, and at a player's 60 each frame takes in more streamed work")

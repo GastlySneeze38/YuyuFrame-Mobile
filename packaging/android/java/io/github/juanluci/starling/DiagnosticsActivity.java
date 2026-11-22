@@ -18,11 +18,37 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 /** A system window in its own process. Opening it does not load the game or create a GPU. */
 public final class DiagnosticsActivity extends Activity {
+    /**
+     * The graphics API the next start uses, chosen here (Vasysik's idea, 2026-11-12): a phone whose
+     * driver takes the game down before Video Settings can be reached can still try the other one.
+     * It is `graphicsApi` in the game folder's settings file, the value Video Settings writes; the
+     * marker of a start that died in the driver goes too, or that start would turn the choice back
+     * into OpenGL ES (graphics.rs `RENDERER_MARKER`, `after_driver_crash`).
+     */
+    private static final String GRAPHICS_FILE = "horizon-graphics.txt";
+    private static final String GRAPHICS_KEY = "graphicsApi:";
+    private static final String RENDERER_MARKER = "horizon-renderer-pending";
+    private static final String[] APIS = {"auto", "vulkan", "opengl"};
+    private static final int[] API_LABELS = {
+        R.string.diagnostics_api_auto, R.string.diagnostics_api_vulkan, R.string.diagnostics_api_opengl,
+    };
+    private final Button[] apiButtons = new Button[APIS.length];
     private TextView status;
     private final ArrayList<Button> actions = new ArrayList<Button>();
     private String latest;
@@ -46,6 +72,18 @@ public final class DiagnosticsActivity extends Activity {
     }
     private native String makeReport(String privateFolder, String gameFolder, boolean export)
             throws java.io.IOException;
+    /**
+     * The one thread that loads the native library and calls into it, alive as long as the process.
+     * The library's allocator (mimalloc) takes the thread that loads it as the process's main thread
+     * and releases the main heap when that thread ends, but keeps its id: with a new thread per
+     * report, a later one that got the dead thread's thread pointer counted as main and crashed in
+     * `mi_thread_init` (SIGSEGV at 0x18) on the second report of the window.
+     */
+    private static final ExecutorService NATIVE = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override public Thread newThread(Runnable work) {
+            return new Thread(work, "diagnostic-export");
+        }
+    });
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -93,6 +131,25 @@ public final class DiagnosticsActivity extends Activity {
             @Override public void onClick(View view) { share(); }
         });
         if (!recovery) add(launching, R.string.diagnostics_start, retry);
+        TextView apiTitle = new TextView(this);
+        apiTitle.setText(R.string.diagnostics_api);
+        apiTitle.setTextSize(14);
+        apiTitle.setTextColor(color(R.color.starling_ink_soft));
+        apiTitle.setTypeface(regular);
+        apiTitle.setPadding(0, dp(12), 0, 0);
+        root.addView(apiTitle);
+        LinearLayout apis = row(root);
+        for (int i = 0; i < APIS.length; i++) {
+            final String api = APIS[i];
+            apiButtons[i] = add(apis, API_LABELS[i], new View.OnClickListener() {
+                @Override public void onClick(View view) { chooseApi(api); }
+            });
+        }
+        showApi(graphicsApi());
+        LinearLayout drivers = row(root);
+        add(drivers, R.string.diagnostics_reset_gpu_driver, new View.OnClickListener() {
+            @Override public void onClick(View view) { resetGpuDriver(); }
+        });
         add(row(root), R.string.diagnostics_close, new View.OnClickListener() {
             @Override public void onClick(View view) { finish(); }
         });
@@ -118,20 +175,75 @@ public final class DiagnosticsActivity extends Activity {
         button.setMinHeight(dp(40));
         button.setMinimumHeight(dp(40));
         button.setPadding(dp(12), dp(8), dp(12), dp(8));
-        boolean primary = text == (recovery ? R.string.diagnostics_start : R.string.diagnostics_export);
+        style(button, text == (recovery ? R.string.diagnostics_start : R.string.diagnostics_export));
+        button.setOnClickListener(listener);
+        actions.add(button);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(0, -2, 1);
+        layout.setMargins(root.getChildCount() == 0 ? 0 : dp(6), dp(6), 0, dp(6));
+        root.addView(button, layout);
+        return button;
+    }
+    /** The accent for the primary action (and the graphics API in use), the soft fill for the rest. */
+    private void style(Button button, boolean primary) {
         int ink = color(primary ? R.color.starling_on_accent : R.color.starling_ink);
         button.setTextColor(new ColorStateList(new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}}, new int[] {(ink & 0xffffff) | 0x66000000, ink}));
         int fill = primary ? color(R.color.starling_accent) : ((color(R.color.starling_ink) & 0xffffff) | 0x14000000);
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x24ecedf3), shape(fill, 10, false), null));
-        button.setOnClickListener(listener);
-        actions.add(button);
-        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(0, -2, 1);
-        layout.setMargins(0, dp(6), root.getChildCount() == 0 ? dp(6) : 0, dp(6));
-        root.addView(button, layout);
-        return button;
     }
     private void busy(boolean value) {
         for (Button button : actions) button.setEnabled(!value);
+    }
+    private File gameFolder() {
+        return GameFolder.choose(getFilesDir(), StarlingActivity.sharedFolder(this)).root();
+    }
+    /** `graphicsApi` in the game folder's settings file; Auto without one, as the game reads it. */
+    private String graphicsApi() {
+        File file = new File(gameFolder(), GRAPHICS_FILE);
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            for (String line = in.readLine(); line != null; line = in.readLine()) {
+                if (line.startsWith(GRAPHICS_KEY)) return line.substring(GRAPHICS_KEY.length()).trim();
+            }
+        } catch (IOException ignored) {
+            // No settings file yet, or unreadable: the game's default.
+        }
+        return "auto";
+    }
+    private void showApi(String api) {
+        for (int i = 0; i < APIS.length; i++) style(apiButtons[i], APIS[i].equals(api));
+    }
+    /** Writes `api` as the settings file's `graphicsApi` (every other line kept) and drops the marker. */
+    private void chooseApi(String api) {
+        File folder = gameFolder();
+        File file = new File(folder, GRAPHICS_FILE);
+        StringBuilder text = new StringBuilder();
+        boolean found = false;
+        try {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                for (String line = in.readLine(); line != null; line = in.readLine()) {
+                    if (line.startsWith(GRAPHICS_KEY)) {
+                        if (found) continue;
+                        line = GRAPHICS_KEY + api;
+                        found = true;
+                    }
+                    text.append(line).append('\n');
+                }
+            } catch (FileNotFoundException missing) {
+                // The game hasn't written its settings yet: this line is the file.
+            }
+            if (!found) text.append(GRAPHICS_KEY).append(api).append('\n');
+            folder.mkdirs();
+            try (OutputStream out = new FileOutputStream(file)) {
+                out.write(text.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            new File(folder, RENDERER_MARKER).delete();
+        } catch (IOException error) {
+            status.setText(getString(R.string.diagnostics_failed, String.valueOf(error.getMessage())));
+            return;
+        }
+        showApi(api);
+        for (int i = 0; i < APIS.length; i++) {
+            if (APIS[i].equals(api)) status.setText(getString(R.string.diagnostics_api_set, getString(API_LABELS[i])));
+        }
     }
     private void report(final boolean export) {
         busy(true);
@@ -139,7 +251,7 @@ public final class DiagnosticsActivity extends Activity {
         final String privateFolder = getFilesDir().getAbsolutePath();
         String shared = StarlingActivity.sharedFolder(this);
         final String game = shared == null ? privateFolder : shared;
-        new Thread(new Runnable() {
+        NATIVE.execute(new Runnable() {
             @Override public void run() {
                 try {
                     // Lazy: even a broken native library cannot prevent the system window opening.
@@ -168,7 +280,7 @@ public final class DiagnosticsActivity extends Activity {
                     });
                 }
             }
-        }, "diagnostic-export").start();
+        });
     }
     private void showLog(String result) {
         final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
@@ -218,5 +330,12 @@ public final class DiagnosticsActivity extends Activity {
         catch (android.content.ActivityNotFoundException error) {
             status.setText(getString(R.string.diagnostics_failed, String.valueOf(error.getMessage())));
         }
+    }
+    /** Back to the system GPU driver without starting the game: forget the chosen custom
+     *  driver and its crash count. The installed drivers stay for the next pick. */
+    private void resetGpuDriver() {
+        File drivers = new File(getFilesDir(), "gpu-drivers");
+        boolean reset = new File(drivers, "current").delete() | new File(drivers, "starts").delete();
+        status.setText(reset ? R.string.diagnostics_gpu_driver_reset : R.string.diagnostics_gpu_driver_system);
     }
 }

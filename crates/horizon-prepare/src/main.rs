@@ -15,12 +15,12 @@ const VERSION: &str = match option_env!("HORIZON_VERSION") {
 const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
-Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
+Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
        horizon-prepare --launch-api [--root PATH]
-       horizon-prepare compile-exporters [--root PATH]
+       horizon-prepare compile-exporters [--root PATH] [--prepare --minecraft-dir PATH --server-jar PATH]
        horizon-prepare sounds [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
        horizon-prepare panorama [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
        horizon-prepare fonts [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
@@ -32,6 +32,9 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
                         (default: HORIZON_MINECRAFT_DIR, or the launcher's own)
+  --prism-dir PATH      A Prism Launcher or MultiMC root, or one of its instances, to read as is:
+                        its rewritten version JSON, Maven libraries, assets and components. No
+                        server jar is downloaded: its client jar stands in for the server side
   --version-json PATH   The pinned version's JSON, where --minecraft-dir has none
   --client-jar PATH     The pinned client jar, where --minecraft-dir has none
   --libraries-dir PATH  The folder of the client's libraries (Maven layout)
@@ -58,7 +61,8 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
 
 Needs Minecraft played once from the official launcher, and Java of the version
 research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
-compile-exporters builds and validates a release bundle from the already imported pinned jars.
+compile-exporters builds and validates a release bundle from the imported pinned jars;
+--prepare first imports the explicit game files, as for resource preparation.
 The resources go to <root>/.local/horizon-client/<version>, or --output; pass that to
 horizon-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
 command line (docs/api/launch.md).
@@ -129,7 +133,11 @@ fn main() -> ExitCode {
             }
         };
         let parsed = match flag.as_str() {
-            "--prepare" | "--server-jar" | "--check" if assets.is_some() => {
+            "--prepare" | "--server-jar" | "--check"
+                if assets
+                    .as_deref()
+                    .is_some_and(|kind| kind != "compile-exporters" || flag == "--check") =>
+            {
                 Err(format!("{flag} is for preparing, not for asset copying"))
             }
             "--prepare" if inline.is_none() => {
@@ -138,6 +146,7 @@ fn main() -> ExitCode {
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
             "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
+            "--prism-dir" => value("--prism-dir").map(|v| options.inputs.prism_dir = Some(v)),
             "--version-json" => {
                 value("--version-json").map(|v| options.inputs.version_json = Some(v))
             }
@@ -205,11 +214,15 @@ fn main() -> ExitCode {
     }
     if check {
         if options.import || options.server_jar.is_some() {
-            eprintln!("horizon-prepare: error: --check prepares nothing; leave out --prepare and --server-jar");
+            eprintln!(
+                "horizon-prepare: error: --check prepares nothing; leave out --prepare and --server-jar"
+            );
             return ExitCode::from(2);
         }
         if json || complete {
-            eprintln!("horizon-prepare: error: --progress and --complete apply to preparing; leave them out with --check");
+            eprintln!(
+                "horizon-prepare: error: --progress and --complete apply to preparing; leave them out with --check"
+            );
             return ExitCode::from(2);
         }
         return check_resources(&options);

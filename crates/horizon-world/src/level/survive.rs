@@ -2,7 +2,7 @@
 //! Rules mirror the natively-validated `block_survival` port; dispatch follows
 //! the Java class chain so `super.canSurvive` reaches the next override.
 use super::{
-    LevelAccess, Sim,
+    LevelAccess, Signals, Sim,
     classes::Class,
     query::is_horizontal,
     update::{HORIZONTAL, above, below, rel},
@@ -140,7 +140,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Class::Crop => {
                 self.raw_brightness(pos, 0) >= 8 && self.can_survive_at(depth + 1, state, pos)
             }
-            Class::Diode => b.is_face_sturdy_rigid(self.below_state(pos), Direction::Up),
+            Class::Diode => self.can_support_rigid_block(below(pos)),
             Class::Door => {
                 let below_state = self.below_state(pos);
                 if b.table.text(state, p.half) == "lower" {
@@ -323,9 +323,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     let below = below(pos);
                     for direction in HORIZONTAL {
                         let at = rel(below, direction);
+                        // Read block state before fluid state, matching vanilla's call order.
+                        let adjacent = self.state(at);
                         let fluid = self.fluid_at(at);
                         if b.fluid_in(fluid.kind(), b.fluid_tags.supports_sugar_cane_adjacently)
-                            || b.in_set(self.state(at), &t.supports_sugar_cane_adjacently)
+                            || b.in_set(adjacent, &t.supports_sugar_cane_adjacently)
                         {
                             return Some(true);
                         }
@@ -359,6 +361,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         ground: BlockStateId,
         ground_pos: BlockPos,
     ) -> bool {
+        // NeoForge's `BushBlock.canSurvive`: the soil's answer first, the plant's second.
+        let mut sustains = None;
+        self.level
+            .before_can_sustain_plant(state, ground, ground_pos, &mut sustains);
+        if let Some(sustains) = sustains {
+            return sustains;
+        }
         let mut may = None;
         self.level
             .before_may_place_on(state, ground, ground_pos, &mut may);
@@ -445,17 +454,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub(crate) fn multiface_has_face(&self, state: BlockStateId, direction: Direction) -> bool {
         self.b.table.bool(state, self.direction_prop(direction))
     }
-    pub(crate) fn direction_prop(&self, direction: Direction) -> super::states::PropKey {
-        let p = &self.b.props;
-        match direction {
-            Direction::Down => p.down,
-            Direction::Up => p.up,
-            Direction::North => p.north,
-            Direction::South => p.south,
-            Direction::West => p.west,
-            Direction::East => p.east,
-        }
-    }
     /// Head and body blocks of a growing-plant family.
     pub(crate) fn growing_plant_pair(
         &self,
@@ -484,30 +482,45 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub(crate) fn is_valid_fire_location(&self, pos: BlockPos) -> bool {
         Direction::ALL
             .into_iter()
-            .any(|direction| self.can_burn(self.rel_state(pos, direction)))
+            .any(|direction| self.neighbour_can_burn(pos, direction))
+    }
+    /// `FireBlock.canBurn` of the neighbour of `pos` in `direction`, asked
+    /// from its side that faces `pos`.
+    pub(crate) fn neighbour_can_burn(&self, pos: BlockPos, direction: Direction) -> bool {
+        let at = rel(pos, direction);
+        self.can_burn(self.state(at), at, direction.opposite())
     }
     /// `FireBlock.canBurn`: ignite odds above zero (waterlogged states never burn).
-    pub(crate) fn can_burn(&self, state: BlockStateId) -> bool {
-        self.ignite_odds(state) > 0
+    pub(crate) fn can_burn(&self, state: BlockStateId, pos: BlockPos, face: Direction) -> bool {
+        self.ignite_odds(state, pos, face) > 0
     }
-    pub(crate) fn ignite_odds(&self, state: BlockStateId) -> i32 {
-        self.fire_odds(state).0
+    pub(crate) fn ignite_odds(&self, state: BlockStateId, pos: BlockPos, face: Direction) -> i32 {
+        self.fire_odds(state, pos, face).0
     }
-    pub(crate) fn burn_odds(&self, state: BlockStateId) -> i32 {
-        self.fire_odds(state).1
+    pub(crate) fn burn_odds(&self, state: BlockStateId, pos: BlockPos, face: Direction) -> i32 {
+        self.fire_odds(state, pos, face).1
     }
-    /// `FireBlock.getIgniteOdds` and `getBurnOdds`: the level's answer, else
-    /// `FireBlock.bootStrap`'s table.
-    fn fire_odds(&self, state: BlockStateId) -> (i32, i32) {
+    /// `FireBlock.getIgniteOdds` and `getBurnOdds` of `state` at `pos`, asked
+    /// from its side `face`: the level's answer, else the world's
+    /// `neoforge:flammable` value, else `FireBlock.bootStrap`'s table.
+    fn fire_odds(&self, state: BlockStateId, pos: BlockPos, face: Direction) -> (i32, i32) {
         if self.b.is_waterlogged(state) {
             return (0, 0);
         }
         let mut odds = None;
-        self.level.before_fire_odds(state, &mut odds);
-        odds.unwrap_or_else(|| {
-            let data = self.b.data(state);
-            (data.ignite_odds, data.burn_odds)
-        })
+        self.level.before_fire_odds(state, pos, face, &mut odds);
+        let b = self.b;
+        let odds = odds.or_else(|| {
+            b.read_block_maps(|maps| maps.flammable(&b.table.info(b.block(state)).name))
+        });
+        match odds {
+            // Burn rolls are at most 300; spread speed has no upper cap.
+            Some((ignite, burn)) => (ignite.max(0), burn.clamp(0, 300)),
+            None => {
+                let data = self.b.data(state);
+                (data.ignite_odds, data.burn_odds)
+            }
+        }
     }
     /// `CampfireBlock.isSmokeSource`: a hay bale, unless the level answers.
     pub(crate) fn is_smoke_source(&self, state: BlockStateId) -> bool {
@@ -612,5 +625,26 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         .into_iter()
         .filter(|d| self.b.table.bool(state, self.direction_prop(*d)))
         .count()
+    }
+}
+
+impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
+    pub(crate) fn direction_prop(&self, direction: Direction) -> super::states::PropKey {
+        let p = &self.b.props;
+        match direction {
+            Direction::Down => p.down,
+            Direction::Up => p.up,
+            Direction::North => p.north,
+            Direction::South => p.south,
+            Direction::West => p.west,
+            Direction::East => p.east,
+        }
+    }
+}
+
+/// `Sim` reads these through its [`Signals`], so there is one implementation of each.
+impl<L: LevelAccess + ?Sized> Sim<'_, L> {
+    pub(crate) fn direction_prop(&self, direction: Direction) -> super::states::PropKey {
+        self.signals().direction_prop(direction)
     }
 }

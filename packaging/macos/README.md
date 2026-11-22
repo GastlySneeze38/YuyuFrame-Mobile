@@ -14,6 +14,22 @@
   swapped in by renaming, then restarted); a bare `horizon-launcher` binary, as launchers before
   the app shipped, finds the binary inside the zip and replaces only itself.
 
+## Fork packages
+
+The arismoko fork ships Apple Silicon (arm64) only, not Intel. Its staged packaging
+uses `Horizon Fork Launcher (arismoko).app`, bundle id
+`io.github.arismoko.horizonfork.launcher`, the fork icon and executable
+`horizon-fork-launcher`. The volume is named `Horizon Fork Launcher (arismoko)`.
+The installer is `horizon-fork-launcher-macos-arm64.dmg`; self-update uses
+`horizon-fork-launcher-macos-arm64.zip` from arismoko/horizon. Settings, accounts
+and game data use the separate fork namespace.
+
+The app is **ad hoc signed, not notarized**. Drag it to Applications. On macOS 14
+and earlier, right-click the app and choose **Open**, then confirm **Open**. On
+macOS 15 and later, open it once, then use **System Settings › Privacy & Security ›
+Open Anyway** and confirm. No Apple signing identity or notarization profile is needed. The upstream signing description below does not
+apply to these fork packages.
+
 ## Signing and notarization
 
 Releases are signed with Ludovic's **Developer ID** ("Developer ID Application: Ludovic Marie
@@ -41,8 +57,8 @@ The release runner (`ludovics-mac-mini-release`, label `horizon-release`, `MAC_R
 LaunchAgent whose jobs run in their own security session, where the login keychain is locked.
 So signing uses a keychain of its own, `~/Library/Keychains/horizon-signing.keychain-db`,
 holding only the Developer ID identity, Apple's "Developer ID Certification Authority" and the
-notarytool profile `horizon-notary` (the App Store Connect team key "App Store Connect API -
-GitHub CI (DISPO)"). Its password is the item "Horizon signing keychain" in the Agents vault.
+notarytool profile `horizon-notary` (an App Store Connect API key of Horizon's own Apple team,
+YYJU63HSD4, the team of the Developer ID above; never a key of another team). Its password is the item "Horizon signing keychain" in the Agents vault.
 `keychain.sh unlock` (each job's first macOS step) reads it with the fleet's 1Password service
 account, unlocks the keychain, checks the identity and the profile are there and hands both to
 the later steps; `keychain.sh lock` ends the job. Nothing secret is in the repository or on
@@ -57,8 +73,10 @@ Setting it up again (a new Mac, a renewed certificate):
    that password, imports the identity and its intermediate, removes any other identity, lets
    `codesign` use the key without a prompt and deletes the .p12. (The login keychain also holds
    other people's Apple Development and Distribution identities: never those.)
-3. `packaging/macos/keychain.sh notary`: the notarytool profile, from the App Store Connect key
-   (written to a private temporary file and deleted).
+3. `packaging/macos/keychain.sh notary`: the notarytool profile, from team YYJU63HSD4's App Store
+   Connect API key in the Agents vault (written to a private temporary file and deleted). Name its
+   1Password item with `MACOS_NOTARY_ITEM`: the script's default still points at another team's key,
+   which Horizon must never use.
 4. The repository variable `MACOS_SIGN_IDENTITY`.
 
 The certificate and its intermediate expire on 1 February 2027: renew the certificate in the

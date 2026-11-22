@@ -10,6 +10,8 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -26,13 +28,23 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.provider.DocumentsContract;
+import android.text.InputType;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.view.InputDevice;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.ViewTreeObserver;
+import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.WindowManager;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.Toast;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.system.ErrnoException;
@@ -53,24 +65,30 @@ import javax.crypto.spec.GCMParameterSpec;
  * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
  * tells the game where its folder is (Starling in shared storage once the player allows it), hides the
  * system bars, keeps the screen on while the game is in front, tells the game how tall the
- * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
- * process with the activity, since the game's event loop cannot start twice in one process.
+ * on-screen keyboard is (it no longer shrinks the window since edge-to-edge) and where the
+ * camera cutout reaches into the window, and ends the process with the activity, since the
+ * game's event loop cannot start twice in one process.
  * The game calls the public methods from its own thread (android_lib.rs): the file manager, the
  * file picker, the clipboard, the keyboard's editor (TextMirror), the browser, the keystore, the
  * mouse's capture and the controllers' makers and motors.
  */
 public class StarlingActivity extends NativeActivity {
+    private DisplayPreferences displayPreferences;
     private static final int PICK_FILE = 1;
     /** Horizon Android's folder picked: its worlds and packs come over (HorizonImport). */
     private static final int PICK_HORIZON = 2;
     /** Android's answer to the permissions the running build's mods need. */
     private static final int MOD_PERMISSIONS = 3;
+    /** The launcher's file picker (Horizon Android's): its answer goes to nativeDocumentResult. */
+    private static final int PICK_DOCUMENT = 4101;
 
     /** The build with native mods this game runs (loadGame), or null for the APK's own. */
     private File modBuild;
 
     /** The build with native mods loaded in place of the APK's library (android_lib.rs). */
     private static final String GAME_LIBRARY = "STARLING_GAME_LIBRARY";
+    /** This install of the APK (NativeMods.stamp), for game/native_builds.rs. */
+    private static final String APK_STAMP = "STARLING_APK";
 
     /**
      * Loads the game library with this class loader, so the native methods resolve: a build with
@@ -79,6 +97,26 @@ public class StarlingActivity extends NativeActivity {
      * build named by GAME_LIBRARY, the very library loaded here.
      */
     private void loadGame() {
+        // The game's thread (android_main, which android-activity starts with std's default 2 MiB
+        // stack) builds the game and the world renderer in frames of about a megabyte each since
+        // Horizon of 2026-11, past that stack's end. Rust's threads take this size unless they ask
+        // for one, and std reads it once, at the first thread: before the library is loaded. As
+        // Linux gives a desktop game's main thread; the player's own setting is kept.
+        try {
+            Os.setenv("RUST_MIN_STACK",
+                    android.os.Process.is64Bit() ? "16777216" : "8388608", false);
+        } catch (ErrnoException e) {
+            // std's default then.
+        }
+        String stamp = NativeMods.stamp(this);
+        if (stamp != null) {
+            try {
+                // The game writes it beside the builds it downloads, and tells an old build by it.
+                Os.setenv(APK_STAMP, stamp, true);
+            } catch (ErrnoException e) {
+                // The game then marks no build as made for this install: none loads.
+            }
+        }
         File build = NativeMods.chosen(this, versionName());
         if (build != null) {
             try {
@@ -101,11 +139,18 @@ public class StarlingActivity extends NativeActivity {
     /** The keyboard's height in window pixels, 0 when it is hidden (android_lib.rs). */
     private static native void onImeHeight(int pixels);
 
+    /** How far the camera cutout reaches into the window from each edge, in window pixels;
+     *  all 0 without one, and before Android 9 (android_lib.rs). */
+    private static native void onSafeInsets(int left, int top, int right, int bottom);
+
     /** The game folder in shared storage, or null to keep it in the app's own files. */
     private static native void onStorage(String folder);
 
     /** Android took back the pointer the game had captured (android_lib.rs). */
     private static native void onPointerCaptureLost();
+
+    /** The launcher's picker answered: its request, its result code and the document (android_lib.rs). */
+    private native void nativeDocumentResult(int request, int result, String uri);
 
     /** The game holds the pointer (capturePointer); on the UI thread only. */
     private boolean pointerWanted;
@@ -160,6 +205,7 @@ public class StarlingActivity extends NativeActivity {
         // Before super.onCreate starts the game's thread, which reads it first thing.
         onStorage(sharedFolder(this));
         super.onCreate(savedInstanceState);
+        displayPreferences = new DisplayPreferences(this);
         // Made here, on the UI thread: the game reads and writes it from its own.
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         // As games do: watching, a controller or a benchmark can go minutes without a touch.
@@ -190,28 +236,66 @@ public class StarlingActivity extends NativeActivity {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(attributes);
         }
-        if (Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= 28) {
             getWindow().getDecorView().setOnApplyWindowInsetsListener(
                     new View.OnApplyWindowInsetsListener() {
                         @Override
                         public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
-                            onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
-                            // The keyboard brings the navigation bar back, and it stayed after
-                            // the keyboard went: home sat beside the chat's keys.
-                            if (insets.isVisible(WindowInsets.Type.navigationBars())
-                                    || insets.isVisible(WindowInsets.Type.statusBars())) {
-                                view.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        hideSystemBars();
-                                    }
-                                });
+                            view.post(() -> displayPreferences.layout());
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
+                                // The keyboard brings the navigation bar back, and it stayed
+                                // after the keyboard went: home sat beside the chat's keys.
+                                if (insets.isVisible(WindowInsets.Type.navigationBars())
+                                        || insets.isVisible(WindowInsets.Type.statusBars())) {
+                                    view.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            hideSystemBars();
+                                        }
+                                    });
+                                }
                             }
                             return view.onApplyWindowInsets(insets);
                         }
                     });
         }
         hideSystemBars();
+    }
+
+    /**
+     * Tells the game where the camera cutout reaches into the window (in landscape, along the
+     * short edge it sits on), so the touch controls and the chat keep clear of it (#166).
+     */
+    void reportCutout(int left, int top, int right, int bottom) {
+        try {
+            onSafeInsets(left, top, right, bottom);
+        } catch (UnsatisfiedLinkError e) {
+            // A build of the game from before the insets: it draws as it always did.
+        }
+    }
+
+    public void setDisplayPreferences(int cutout, int orientations, int rotation, int width, int height) {
+        runOnUiThread(() -> displayPreferences.set(cutout, orientations, rotation, width, height));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        displayPreferences.listen(true);
+        displayPreferences.layout();
+    }
+
+    @Override
+    protected void onPause() {
+        displayPreferences.listen(false);
+        super.onPause();
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        getWindow().getDecorView().post(() -> displayPreferences.layout());
     }
 
     @Override
@@ -367,13 +451,11 @@ public class StarlingActivity extends NativeActivity {
 
     /**
      * Buzz the phone itself for `millis` ms at its default strength: the touch controls'
-     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still.
+     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still;
+     * 0 stops a buzz under way (vibration just turned off).
      */
     @SuppressWarnings("deprecation")
     public void vibrate(int millis) {
-        if (millis <= 0) {
-            return;
-        }
         Vibrator motor;
         if (Build.VERSION.SDK_INT >= 31) {
             VibratorManager motors =
@@ -382,7 +464,12 @@ public class StarlingActivity extends NativeActivity {
         } else {
             motor = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         }
-        if (motor != null && motor.hasVibrator()) {
+        if (motor == null || !motor.hasVibrator()) {
+            return;
+        }
+        if (millis <= 0) {
+            motor.cancel();
+        } else {
             motor.vibrate(VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }
@@ -397,6 +484,9 @@ public class StarlingActivity extends NativeActivity {
         } else if (requestCode == PICK_HORIZON && resultCode == RESULT_OK && data != null
                 && data.getData() != null) {
             HorizonImport.start(this, data.getData());
+        } else if (requestCode == PICK_DOCUMENT) {
+            nativeDocumentResult(requestCode, resultCode,
+                    data == null || data.getData() == null ? null : data.getData().toString());
         }
     }
 
@@ -462,6 +552,9 @@ public class StarlingActivity extends NativeActivity {
             public void run() {
                 if (mirror != null) {
                     mirror.hide();
+                    android.view.View game = getWindow().getDecorView();
+                    game.setFocusableInTouchMode(true);
+                    game.requestFocus();
                 }
             }
         });
@@ -542,6 +635,82 @@ public class StarlingActivity extends NativeActivity {
                 .show();
     }
 
+    /**
+     * The player's own build server for native mods (game/native_builds.rs): only ever typed here,
+     * so no link or file can choose it. The game it sends back runs inside this app, so the warning
+     * says that plainly.
+     */
+    public void askBuildServer(final String current) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                showBuildServerDialog(current);
+            }
+        });
+    }
+
+    private void showBuildServerDialog(String current) {
+        final EditText address = new EditText(this);
+        address.setSingleLine(true);
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        address.setHint("https://example.com");
+        address.setText(current);
+        float dp = getResources().getDisplayMetrics().density;
+        // The game's own look, not the system's white box; the keyboard leaves the warning in view.
+        GradientDrawable box = new GradientDrawable();
+        box.setColor(0xFF1E2127);
+        box.setCornerRadius(8 * dp);
+        box.setStroke(Math.round(dp), 0xFF8B7CF6);
+        address.setBackground(box);
+        address.setTextColor(0xFFFFFFFF);
+        address.setHintTextColor(0xFF8A8F98);
+        address.setPadding(Math.round(12 * dp), Math.round(10 * dp), Math.round(12 * dp),
+                Math.round(10 * dp));
+        address.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_DONE);
+        FrameLayout frame = new FrameLayout(this);
+        int side = Math.round(20 * dp);
+        frame.setPadding(side, 0, side, 0);
+        frame.addView(address);
+
+        String warning = "WE TAKE NO RESPONSIBILITY FOR OTHER BUILD SERVERS";
+        SpannableStringBuilder message = new SpannableStringBuilder(warning);
+        message.setSpan(new ForegroundColorSpan(0xFFFF5252), 0, warning.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        message.setSpan(new RelativeSizeSpan(1.3f), 0, warning.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        message.setSpan(new StyleSpan(Typeface.BOLD), 0, warning.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        message.append("\n\nThe game another server sends back runs inside Starling with full "
+                + "access, including your worlds and your signed-in account. Only use a server you "
+                + "run yourself or fully trust. Your native mods are the only files sent to it.");
+
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Build server")
+                .setMessage(message)
+                .setView(frame)
+                .setPositiveButton("Use this server", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String typed = address.getText().toString();
+                        if (NativeMods.isBuildServer(typed)) {
+                            NativeMods.chooseBuildServer(StarlingActivity.this, typed);
+                        } else {
+                            Toast.makeText(StarlingActivity.this,
+                                    "That is not an https:// address. Nothing changed.",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    }
+                })
+                .setNeutralButton("Use Starling's", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        NativeMods.chooseBuildServer(StarlingActivity.this, null);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     /** Mod ids as the player reads them: "voicechat" is Voicechat, two are "A and B". */
     private static String modNames(List<String> ids) {
         StringBuilder names = new StringBuilder();
@@ -596,8 +765,19 @@ public class StarlingActivity extends NativeActivity {
      * in a process of its own, waits for this one to end.
      */
     public void restart() {
+        restart(null);
+    }
+
+    /**
+     * As {@link #restart()}, with what the restart screen says meanwhile (the reason, in the
+     * player's language: the world's mods, the launcher, the files moving); null for the default.
+     */
+    public void restart(String message) {
         Intent again = new Intent(this, LauncherActivity.class);
         again.putExtra(LauncherActivity.AFTER, android.os.Process.myPid());
+        if (message != null && !message.isEmpty()) {
+            again.putExtra(LauncherActivity.MESSAGE, message);
+        }
         again.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(again);
         runOnUiThread(new Runnable() {
@@ -606,6 +786,26 @@ public class StarlingActivity extends NativeActivity {
                 finish();
                 // Straight to the launcher's restart screen, no window animation between.
                 overridePendingTransition(0, 0);
+            }
+        });
+    }
+
+    /**
+     * The launcher's file picker (Horizon Android's): the document chosen goes to the launcher,
+     * which reads it through the content resolver and puts it where it belongs.
+     */
+    public void pickDocument() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                try {
+                    startActivityForResult(intent, PICK_DOCUMENT);
+                } catch (ActivityNotFoundException e) {
+                    nativeDocumentResult(PICK_DOCUMENT, RESULT_CANCELED, null);
+                }
             }
         });
     }
@@ -654,17 +854,50 @@ public class StarlingActivity extends NativeActivity {
         return true;
     }
 
-    /** The system's file manager on a folder of shared storage; false where none can show it. */
+    /**
+     * The system's file manager on a folder; false where none can show it. A folder of the game's
+     * opens through this app's own provider (GameFolderProvider), which shows it in shared storage
+     * and in the app's own files alike, as Horizon Android did. Another one of shared storage opens
+     * through the storage's provider. When nothing opens, the player is told where to look.
+     */
     public boolean openFolder(String path) {
-        String root = Environment.getExternalStorageDirectory().getPath();
-        if (!path.startsWith(root)) {
-            return false;
+        File target = new File(path);
+        String id = GameFolder.choose(getFilesDir(), sharedFolder(this)).idOf(target);
+        if (id != null
+                && viewFolder(DocumentsContract.buildDocumentUri(getPackageName() + ".documents", id))) {
+            return true;
         }
-        String relative = path.substring(root.length()).replaceFirst("^/+", "");
-        Uri folder = DocumentsContract.buildDocumentUri(
-                "com.android.externalstorage.documents", "primary:" + relative);
-        // Any file manager that takes a folder, else the system's own (Files).
-        String[] packages = {null, "com.google.android.documentsui", "com.android.documentsui"};
+        String root = Environment.getExternalStorageDirectory().getPath();
+        boolean shared = path.startsWith(root + "/");
+        if (shared) {
+            String relative = path.substring(root.length() + 1);
+            Uri folder = DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents", "primary:" + relative);
+            if (viewFolder(folder)) {
+                return true;
+            }
+        }
+        // A folder the Files app can't show at all (the app's own native mods) is the game's to
+        // explain: it offers the Starling folder.
+        if (id != null || shared) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(StarlingActivity.this, R.string.open_folder_failed,
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+        return false;
+    }
+
+    /**
+     * A folder document in the system's Files app, which shows any provider's, else in any file
+     * manager that takes one. Some phones' own file managers take the intent and show nothing for
+     * another app's documents, so the system's goes first.
+     */
+    private boolean viewFolder(Uri folder) {
+        String[] packages = {"com.google.android.documentsui", "com.android.documentsui", null};
         for (String app : packages) {
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(folder, DocumentsContract.Document.MIME_TYPE_DIR);
@@ -676,7 +909,7 @@ public class StarlingActivity extends NativeActivity {
                 startActivity(intent);
                 return true;
             } catch (ActivityNotFoundException | SecurityException e) {
-                // The next one.
+                android.util.Log.i("starling", "No folder view in " + app + ": " + e);
             }
         }
         return false;

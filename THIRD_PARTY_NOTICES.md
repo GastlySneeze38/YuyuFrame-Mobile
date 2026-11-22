@@ -1,18 +1,159 @@
 # Third-party notices
 
+## cap-std / cap-fs-ext
+
+`horizon-client` directly uses `cap-std` and `cap-fs-ext` 3.4.6 from
+[the cap-std project](https://github.com/bytecodealliance/cap-std) for confined mod file access.
+Copyrights are retained by their contributors. Both crates offer Apache-2.0 WITH LLVM-exception,
+Apache-2.0 or MIT; the MIT option is reproduced here:
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+## horizon-mixins
+
+The raw injection schema in `crates/horizon-mod-package/src/manifest.rs` is adapted from
+[horizon-mixins](https://github.com/horizon-rust/horizon-mixins/tree/ddd9700b21997c95d95ac6ee5ecafe3830cf622a),
+Copyright (c) 2026 levzzz, under the MIT license
+(`crates/horizon-mod-package/HORIZON_MIXINS_LICENSE`).
+
+## Code removed for its license
+
+Horizon once shipped three pieces of code under MIT that came from projects whose licenses don't allow that. All
+three are gone from main. They are listed here for anyone who holds an older commit, tag or release: in those
+versions, that code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original
+license.
+
+- **Shader packs written from Iris's source.** `crates/horizon-shaderpack` and the render stages that used it were
+  written from the source of [Iris](https://github.com/IrisShaders/Iris) (LGPL-3.0, copyright the Iris contributors).
+  They were added from 15 October 2026 (`b22583d057`), shipped in the game releases `v2026.10.16.02` to `v0.2.46`,
+  and were removed on 24 October 2026 ([#1561](https://github.com/horizon-rust/horizon/pull/1561)) after a developer
+  of Iris showed us. Shader packs came back in `crates/horizon-shaders`, first written from a description of the
+  pack format.
+- **Math functions translated from OpenJDK.** In `crates/horizon-core/src/jmath.rs`, `fdlibm::{log, log10, cbrt,
+  hypot}` were translated from OpenJDK's `java/lang/FdLibm.java` and `round_f32` from its `java/lang/Math.java`
+  (GPL-2.0 with the Classpath Exception), and `aarch64::{sin, cos}` from HotSpot's `macroAssembler_aarch64_trig.cpp`
+  (GPL-2.0); copyright Oracle and/or its affiliates, and Cavium for that file. The `fdlibm` and `aarch64` functions
+  were added on 13 October 2026 (`558d140fca`, first released in `v2026.10.13`). `round_f32` was added on 14 October
+  2026 as `java_round` in `crates/horizon-client/src/mipmap.rs` (`95db0fce9d`) and moved into `jmath.rs` on 3
+  November ([#7770](https://github.com/horizon-rust/horizon/pull/7770)). All of them were replaced in
+  [#11944](https://github.com/horizon-rust/horizon/pull/11944) by code written without OpenJDK's sources, from Sun's
+  fdlibm C sources, the Java SE API documentation and a description of the behaviour, and checked against a JVM
+  ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+- **Java's `HashMap` translated from OpenJDK.** `crates/horizon-world/src/java_hash_map.rs`, which reproduces the
+  iteration order of `java.util.HashMap`, was translated from OpenJDK's `java/util/HashMap.java` (GPL-2.0 with the
+  Classpath Exception; copyright Oracle and/or its affiliates). It was added on 7 October 2026 (`118e93ea51` and
+  `194db0dbb4`, first released in `v2026.10.12`). It was replaced in
+  [#12043](https://github.com/horizon-rust/horizon/pull/12043) by code written without OpenJDK's sources, from a
+  description of the behaviour, the Java SE API documentation and the textbook red-black tree, and checked against a
+  JVM ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+
+## Catnip / Ponder
+
+`crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
+UV rules of Catnip's `FluidRenderHelper` from Ponder 1.0.82 for Minecraft 1.21.1
+(`net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1`). Copyright (c) 2022 The Create Team,
+licensed under MIT (`LICENSE_Ponder` in that artifact); the full license heads the Rust file.
+The native renderer uses Horizon's own block-sprite arrays, pose and light packing. The
+development-only oracle calls the unchanged helper from the player's local artifact. No
+original classes, game shaders, textures or prepared resources are distributed here.
+
 ## wgpu-hal
 
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs
 developers, with upstream fixes applied
 ([gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124),
-[gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). It is licensed under MIT or
-Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
+[gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). Its GL backend also reports
+the context's sampled textures and samplers per shader stage (usually 32 on desktop GL,
+where WebGL2's minimum 16 was reported before), so a pipeline layout the driver accepts is
+not refused. Its GL backend copies depth and stencil textures with a framebuffer blit, where
+`glCopyTexSubImage` read only colour and left the copy empty. It is licensed under MIT or
+Apache-2.0; both licenses are in that folder
+(`LICENSE.MIT`, `LICENSE.APACHE`).
+
+## android-activity
+
+`third_party/android-activity` is [android-activity](https://github.com/rust-mobile/android-activity)
+0.6.1 by the rust-mobile developers, without its `android-games-sdk` folder (GameActivity's, which
+Starling does not build). On 64-bit Android its NativeActivity thread, the game's, is started with
+the wasm guest stack (`horizon-guest-stack`). It is licensed under MIT or Apache-2.0; both licenses
+are in that folder (`LICENSE-MIT`, `LICENSE-APACHE`).
 
 ## naga
 
 `third_party/naga` is [naga](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs developers, with
 fixes to its GLSL frontend that shader packs need, each applied in the commit that needed it. It is licensed under MIT or Apache-2.0; both licenses
 are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
+
+The GLSL frontend also resets the common type for each comma-separated declarator so one
+variable's array specifier does not change later variables.
+It also reads a struct member outside a constant expression through a pointer to the member,
+not out of a loaded copy of the whole struct, so a member an atomic function uses can be read.
+The HLSL backend writes an ordinary level-zero texture sample as `SampleLevel(..., 0.0)`, while
+comparison textures keep `SampleCmpLevelZero`; HLSL has no ordinary `SampleLevelZero` method.
+The shared interpolation defaults also compile with `glsl-in` alone, without needing the
+SPIR-V or WGSL frontend to enable them.
+The HLSL backend's texture-sampling offset cast preserves the offset's scalar or vector width,
+including `int` for 1D and `int3` for 3D textures instead of always using `int2`.
+
+## DirectX Shader Compiler
+
+The Windows x64 game folder holds `dxcompiler.dll`, Microsoft's DirectX Shader Compiler
+[v1.9.2609](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609), unmodified: the
+`bin/x64/dxcompiler.dll` of `dxc_2026_09_29.zip` (zip SHA-256
+`ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1`, DLL SHA-256
+`0689e2fee0a1c9df8662a59680469f24e2a3ad7ce6bbbcc9284f7a83172bfc59`, 22,274,872 bytes). The release build downloads
+it and checks both checksums (`tools/ci/fetch_dxc.py`); it is not in this repository. DirectX 12 loads it only on
+integrated GPUs (`crates/horizon-client-render/src/gfx/dx12_compiler.rs`,
+[#8513](https://github.com/horizon-rust/horizon/issues/8513)); every other GPU compiles with FXC, part of Windows.
+
+Copyright (c) Microsoft Corporation. It is not covered by Horizon's MIT license. It is distributed under the
+"Microsoft Software License Terms, Microsoft DirectX Shader Compiler" (`LICENSE-MS.txt` of that release). Its
+Distributable Code terms are the Windows SDK's: end users get terms that protect the code and Microsoft at least as
+much, and the distributor indemnifies Microsoft. The project accepted them on 2026-11-08. Its open-source part is also under the University of Illinois/NCSA license (`LICENSE-LLVM.txt`). Both
+files ship beside the DLL as `DXC-LICENSE-MS.txt` and `DXC-LICENSE-LLVM.txt`, with `DXC-NOTICE.txt`
+(`packaging/windows/`), which tells players those terms apply and that deleting the DLL brings back FXC.
+
+- Only x64: the Windows SDK's list of distributable files
+  ([REDIST.TXT lists](https://learn.microsoft.com/en-us/legal/windows-sdk/redist), updated 2024-10-21) names
+  `Redist\D3D\x64\dxcompiler.dll` and `dxil.dll` and their x86 copies, for classic Windows applications (Horizon is
+  one), and no ARM64 copy. The release zip's own `LICENSE-MS.txt` refers to a list of distributable files that the zip
+  doesn't contain, so the SDK's list is the one followed. The Windows ARM64 build ships no DXC and compiles with FXC.
+- No `dxil.dll`: since DXC 1.8.2505 the compiler signs shaders with its own validator and no longer loads it, and
+  wgpu never does.
+
+## libadrenotools and liblinkernsbypass
+
+`third_party/libadrenotools` is [libadrenotools](https://github.com/bylaws/libadrenotools) by Billy
+Laws at `8fae8ce`, with its `lib/linkernsbypass` submodule
+([liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass)) at `aa39759`, both under the
+BSD-2-Clause license (`LICENSE.adrenotools` and `lib/linkernsbypass/LICENSE` in that folder).
+Only the Vulkan driver-loading hook is vendored (see `README.starling.md` there for what is built
+and what is left out): no changes to the vendored sources. `src/hook/kgsl.h` is a Linux kernel
+UAPI header (GPL-2.0 WITH Linux-syscall-note, The Linux Foundation and Qualcomm Innovation
+Center): it only declares the KGSL ioctl interface the hook talks through, which the syscall
+note permits without affecting the app's license; no kernel code is compiled in.
 
 ## libmimalloc-sys and mimalloc
 
@@ -79,8 +220,9 @@ ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`, at commit
 [c6efa6bf7f20](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55)),
-and `optical_flow.rs` follows the SDK's `sdk/src/components/opticalflow/ffx_opticalflow.cpp`
-(its passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
+and `optical_flow.rs` and `interpolation.rs` follow the SDK's
+`sdk/src/components/{opticalflow/ffx_opticalflow.cpp,frameinterpolation/ffx_frameinterpolation.cpp}`
+(their passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
 Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
 trademarks; Horizon is not affiliated with AMD.
 
@@ -192,13 +334,19 @@ BlueMap is licensed under the MIT license:
 > THE SOFTWARE.
 ## OpenJDK for Android (fetched on the phone, not shipped)
 
-To prepare the game files on a phone, Starling downloads OpenJDK 25.0.5 built for Android by
+To prepare the game files on a phone, Starling downloads OpenJDK 25 built for Android.
+ARM64 and x86_64 use OpenJDK 25.0.5 from
 AngelAuraMC ([angelauramc-openjdk-build](https://github.com/AngelAuraMC/angelauramc-openjdk-build),
-release `download_jre25`, checked against the SHA-256 in `crates/starling-account/src/java.rs`),
-runs it for the preparing and deletes it after. OpenJDK is licensed under the GNU General Public
+release `download_jre25`). ARM32 uses OpenJDK 25.0.4 from
+[EclipseJRE](https://github.com/SouhardyaMaybe/EclipseJRE/releases/tag/jres-v1.0.0),
+release `jres-v1.0.0`, archive `jre25-arm-20261009-release.tar.xz`.
+Each archive is checked against the SHA-256 in `crates/starling-account/src/java.rs`;
+Starling runs it for preparation and deletes it after. OpenJDK is licensed under the GNU General Public
 License version 2 with the Classpath Exception; its sources are at
-[openjdk/jdk](https://github.com/openjdk/jdk), the build's scripts and patches in that
-repository. Starling's launcher for it (`packaging/android/native/java_launcher.c`) is MIT.
+[openjdk/jdk](https://github.com/openjdk/jdk), with build scripts and patches in the
+respective publisher's repository. Only the published runtimes are executed;
+no JDK source is copied into Starling. Starling's launcher for it
+(`packaging/android/native/java_launcher.c`) is MIT.
 
 ## Bedrock's touch buttons (fetched on the phone, not shipped)
 
@@ -210,6 +358,23 @@ them. They are © Mojang AB, under the Minecraft End User License Agreement the 
 to; Starling carries none of them. Where they are missing, Starling's own buttons
 (`crates/horizon-client/assets/touch`, drawn by `packaging/touch/make.py`) are MIT.
 
+## Horizon Android legacy GLES compatibility
+
+The GLES-only terrain texture selection, RGSS unrolling, varying packing,
+emissive lookup and entity overlay lowering, and HDR texture selection are
+adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/horizon-client-render/src/gfx).
+The source is MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors;
+the repository LICENSE retains its license text.
+
+The explicit panorama cube vertex buffer and preservation of GUI sprites while
+fitting a small atlas are adapted from the same revision's `gfx/panorama.rs`,
+`gfx/panorama.wgsl` and `hud.rs`. Starling's lazy panorama loading is retained;
+Android OpenGL panoramas use the fork's 256-pixel box-filtered faces. The small-atlas skyline packing and fitting policy are also ported from that revision.
+
+The adaptation preserves Starling's RGSS tiled-face argument, HDR scene varying
+and all 128 emissive entries. The emissive search uses flat early returns to keep
+shader parser/validator stack depth bounded. Vulkan terrain WGSL remains unchanged.
+
 ## Horizon Android diagnostics
 
 The diagnostic session/export, Android exit history, native tombstone summary and
@@ -220,3 +385,242 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 The port uses Starling's existing logger, crash hook and GPU timers and exposes
 reports through the game's Diagnostics settings and an Android launcher shortcut,
 with a renderer-independent recovery window for interrupted startup.
+
+## JOML
+
+`crates/horizon-client-render/src/camera.rs` (`joml::Mat4::rotation`, `invert_orthonormal`) and
+`crates/horizon-client-render/src/gfx/pack_uniforms.rs` (`invert_generic`, `invert_affine`, the
+formulas of `pack_projection` and `shadow_ortho`) adapt the float arithmetic of
+`Matrix4f.rotation(Quaternionfc)`, `invertOrthonormal`, `invertGenericNonThis`, `invertAffine`,
+`setPerspective` and `setOrtho` from
+[JOML](https://github.com/JOML-CI/JOML/tree/faf9eef2511242122beb6055fe3da92daed214c5) 1.10.9, the
+library vanilla 26.3 uses, so that shader packs get the same matrices to the last bit. Changes:
+ported to Rust; the pack_uniforms.rs functions drop JOML's property flags, and
+`pack_projection` works the formula in doubles. The copyright line and license notice also head
+both files.
+
+`camera.rs` also adapts `Quaternionf.rotationX`, `rotationY` and `rotationZ`,
+`Matrix4f.rotateAffine` and `Vector4f.mulAffine` (`joml::Quat::rotation_x`/`_y`/`_z`,
+`joml::Mat4::rotate_affine`, `transform_affine`), for the sky's positions shader packs read.
+Changes: ported to Rust; `rotate_affine` keeps only the affine case.
+
+```
+The MIT License
+
+Copyright (c) 2015-2026 Richard Greenlees
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## Just Enough Items
+
+The Recipes GUI sprites and settings icon under `crates/horizon-client-render/src/jei_recipes` are from
+[Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems/tree/0371fa6fafa14635a356019e4604f5580b26a34f)
+by mezz and contributors, under the MIT license in that directory (`LICENSE.txt`).
+
+## Flywheel native model directional shading
+
+The two-light diffuse expression and transformed-normal policy in
+`terrain.wgsl`'s native model entries follow Flywheel 1.0.6
+(`internal/diffuse.glsl`, `instance/transformed.vert`, `internal/common.vert`).
+No Flywheel classes, compiled shaders or original model/texture assets are bundled.
+
+Copyright (c) 2021-2024 Jozufozu
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## fdlibm
+
+`crates/horizon-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
+`fdlibm_atan2` functions in `crates/horizon-core/src/geometry/trig.rs` are Rust ports of
+[fdlibm](https://www.netlib.org/fdlibm/) 5.3, Sun's freely distributable math library, whose
+results the Java SE API specifies for `StrictMath`. `fdlibm.rs` ports `e_log.c`, `e_log10.c`,
+`s_cbrt.c` and `e_hypot.c`, and, with fused multiply-adds, `s_sin.c`, `s_cos.c`, `k_sin.c`,
+`k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `e_asin.c`, `s_atan.c` and `e_atan2.c`.
+
+The strict additions in `crates/horizon-core/src/jmath/fdlibm/strict_exp_pow.rs`
+adapt netlib's original `e_exp.c` 1.6 (2004-04-22), `e_pow.c` 1.5
+(2004-04-22) and `s_scalbn.c` 1.3 (1995-01-18), preserving their ordered
+double arithmetic and Sun permission notices. Their public-JDK reference
+vectors are generated by `tools/generate_strict_math_vectors.py` through
+`StrictMath` API calls; no JDK/OpenJDK implementation source was used.
+
+`strict_trig.rs` adapts original netlib `s_sin.c`, `s_cos.c`, `s_tan.c`,
+`k_sin.c`, `k_cos.c`, `k_tan.c`, `e_rem_pio2.c` and `k_rem_pio2.c`.
+The full large-argument reduction kernel specializes its original `prec=2`
+double-precision path; the unfused arithmetic order is preserved. The tangent
+kernel carries Sun's 2004 notice; the other trigonometric sources carry Sun's
+1993 notice.
+
+The original Sun notice is preserved in each adapted source:
+
+```
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunSoft, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+```
+
+## Starling
+
+`crates/horizon-client-render/src/touch/layout.rs` and `crates/horizon-client-render/src/touch/aim.rs`
+are adapted from the touch layout and touch helpers of
+[Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
+[150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
+(`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
+Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
+
+## Horizon Android renderer paths
+
+What only Adreno on Android's Vulkan takes here is adapted from
+[Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/horizon-client-render/src),
+under the MIT license (the same [LICENSE](LICENSE) as this repository).
+Copyright (c) 2026 Ludovic Marie and the Horizon contributors. That covers `gfx/adreno.rs`, the sky
+after solid terrain (`gfx/late_sky.rs` and the far-plane vertex entries in `terrain.wgsl`,
+`entity.wgsl` and `gfx/stars.wgsl`; its commit 60211b4e8a), flat draws from 512 sections
+(`gfx/flat.rs`; its commit 1a115395f8) and the cheaper terrain shaders (`gfx/solid_paths.rs`,
+`fs_cutout_static` and `SETTLED_TERRAIN` in `terrain.wgsl`; its commits 202c962884, 3c9856cc93 and
+9771fbce2b).
+
+The fork takes them on every Android Vulkan GPU it allows; here they follow `splits_solid`, which
+holds on Adreno, but for the sky after solid terrain, which every GPU behind Android's Vulkan takes
+(`late_sky::wanted`), as in the fork. Starling's sunrise fan is geometry, so it has a far-plane
+entry of its own. The
+fork's two specialization constants are one here, which also leaves out the distant tiles' sampling,
+and its terrain shaders also cover flat frames. The indirect offset fix in 1a115395f8 doesn't apply:
+Starling's solid passes don't rebase the indirect buffer.
+
+Drawing each section with a call of its own on Android, rather than with indirect multi-draws
+(`indirect_draws_wanted` in `gfx.rs`), follows the same revision's commit 77b9e17f76, which turned
+indirect multi-draws off on every Android GPU.
+
+## Horizon Android documents provider
+
+The game folder's place in Android's Files app (`packaging/android/java/io/github/juanluci/starling/GameFolderProvider.java`
+and `GameFolder.java`) is adapted from the documents provider in [Vasysik/horizon-android at
+fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/packaging/android/java/dev/horizon/android)
+and its `crates/horizon-client/src/android/document_store.rs`, under the MIT license (the same
+[LICENSE](LICENSE) as this repository). Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+The port is plain Java over Starling's one game folder, in place of the fork's Rust store of
+profiles and fixed folders that its launcher screens share.
+
+## Horizon Android control system and editor
+
+The Android control engine, MCPE/GoyControl layouts and presets, visual editor,
+control hub, virtual pointer and auxiliary keyboard are adapted from
+[Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606),
+MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors (see [LICENSE](LICENSE)).
+Source: `crates/horizon-client-render/src/touch.rs`, `touch/{layout,editor,custom}.rs`,
+`crates/horizon-client/src/{touch_ui,ui_theme,osk,ui_text}.rs`, and Android input
+integration in `game/android_input.rs`, `game/pad.rs` and `game.rs`. The
+physical D-pad/keypad profile is from `horizon-client-render/src/keypad.rs`
+and its editable bindings in `options_ui.rs`.
+
+The port uses Starling's input, IME, inventory, controller and renderer interfaces.
+Its UI rasterization shares Starling's existing runtime atlas allocator; it does
+not add a second font texture. Starling's chat shortcuts and slot gestures are
+retained. No Minecraft textures or prepared resources are included by this port.
+
+## Horizon Android account profiles and Ely.by
+
+Provider-aware profile selection and Ely.by authentication, refresh, 2FA and session routing are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/account.rs`, `launcher/src/account/ely.rs`, `crates/horizon-client/src/android/login.rs` (behavior reference) and `crates/horizon-client-render/src/auth.rs`. MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. The integration preserves Starling's Microsoft public client and sealed secret store, adds provider-separated keys and offline profile metadata, and uses Starling's existing title widgets rather than the Android launcher's panel.
+## Horizon Android wardrobe
+
+Per-account skin selection and the Microsoft profile skin upload are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/skins.rs`, `launcher/src/skins/library.rs`, `launcher/src/skins/cloud.rs` and `crates/horizon-client/src/android/wardrobe.rs` (behavior reference). MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. Starling keeps its `skins/` folder and Skin Customization page in place of the wardrobe's image store and launcher panel, keys each choice by the profile, uploads through its own sealed session, and sends Ely.by accounts to ely.by as Horizon Android does.
+
+The mobile attack gauge side and offhand spacing in `crates/horizon-client-render/src/hud_layout.rs` are adapted from the same Horizon Android commit fa548eb7abe91c194d3780e4580b9746323cd606 under MIT.
+`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+
+`crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
+(`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
+`android_runtime.rs`, at the same commit.
+
+`crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
+state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/touch/draw.rs` is adapted from the touch control drawing in
+Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.
+
+## PCG3D hash
+
+`hash3` in `crates/horizon-client-render/src/hdr.wgsl`, the noise HDR10 output's dither is made from, is the
+`pcg3d` hash of Mark Jarzynski and Marc Olano ("Hash Functions for GPU Rendering", Journal of Computer Graphics
+Techniques 9(3), 2020), from <https://github.com/markjarzynski/PCG3D>. Copyright 2020 Mark Jarzynski & Marc Olano,
+licensed under MIT:
+
+```
+Copyright 2020 Mark Jarzynski & Marc Olano
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## Horizon Android performance work
+
+Adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
+under the MIT license (the same [LICENSE](LICENSE) as this repository).
+Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+
+- The blurred backdrop a paused menu keeps and draws again in place of the world and the blur
+  (`menu_blur.rs` `keep` and `draw_kept`, `Renderer::draw_kept_menu`, `Game::menu_blur_cache`),
+  from its commit 77b9e17f76 (`menu_blur_cache`, `blit_cached`). Here only a paused single-player
+  game keeps it, and a changed setting forgets it.
+- Terrain arena pages that stop growing at 32 MiB on 64-bit Android, one emptied page kept as a
+  spare and the first page made while the level loads (`gfx/arena.rs` `page_ceiling`, `prewarm`,
+  `keep_spare`), from its commits acfb2bae43 and 8c08d71508 (`growth_limit`, `prewarm`, `spare`).
+- Fifo for a new swapchain on Android until the settings apply (`first_present_mode` in `gfx.rs`),
+  from its `Renderer::new_with_context`, and the title menu held to 60 FPS on Android while resources
+  load (`loading_frame_due` in `game/runtime/loading_screen.rs`), from its commit f5cf0231bc.
+- Shadow maps of at most 4096 on Android (`shadow_side_limit` in `gfx/pack_shadow.rs`), from
+  `max_shadow` in its `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`.

@@ -53,14 +53,20 @@ pub struct ConfirmExperimentsScreen {
 impl ConfirmExperimentsScreen {
     /// `ConfirmExperimentalFeaturesScreen::new`: the picked selection's
     /// feature packs, each with the flags it asks for.
-    pub fn new(resources: &std::path::Path, selected: &[String]) -> Self {
-        let entries = crate::datapack::feature_packs(resources)
+    pub fn new(
+        resources: &std::path::Path,
+        selected: &[String],
+        additional: &[std::sync::Arc<crate::datapack::DataPack>],
+    ) -> Self {
+        let entries = crate::datapack::feature_repository(resources, additional)
             .into_iter()
             .filter(|p| selected.contains(&p.id))
             .filter(|p| !p.features().is_empty())
             .map(|p| {
                 let name = format!("dataPack.{}.name", p.id);
-                let title = (if crate::lang::has(&name) {
+                let title = (if let Some(info) = &p.selection {
+                    info.title.clone()
+                } else if crate::lang::has(&name) {
                     Text::translate(&name, &[])
                 } else {
                     Text::literal(p.id.clone())
@@ -132,9 +138,16 @@ impl ConfirmExperimentsScreen {
         }
         ui::hovered((x, y), bx, by, BUTTON, 20.0).then_some(Click::Back)
     }
-    pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32)) {
+    pub fn draw(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cursor: (f32, f32),
+        phases: &mut dyn FnMut(crate::screen_draw::RenderPhase, &mut HudBatch),
+    ) {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
+        phases(crate::screen_draw::RenderPhase::Background, batch);
         let font = &atlas.font;
         if self.details {
             // `DetailsScreen`: the header's title, the packs, Back in the
@@ -164,9 +177,10 @@ impl ConfirmExperimentsScreen {
                 y += 10.0;
             }
             let [(bx, by)] = footer_single(w, h);
-            ui::button(
+            ui::action_button(
                 batch,
                 atlas,
+                crate::widgets::Action::Back,
                 bx,
                 by,
                 BUTTON,
@@ -175,6 +189,7 @@ impl ConfirmExperimentsScreen {
                 true,
                 ui::hovered(cursor, bx, by, BUTTON, 20.0),
             );
+            phases(crate::screen_draw::RenderPhase::Foreground, batch);
             return;
         }
         let message = Self::message_lines(font);
@@ -209,6 +224,7 @@ impl ConfirmExperimentsScreen {
             ui::hovered(cursor, dx, dy, DETAILS, 20.0),
         );
         let [(px, py), (bx, by)] = footer_pair(w, h);
+        crate::widgets::declare_action(crate::widgets::Action::Back, [bx, by, BUTTON, 20.0], true);
         for (fx, fy, key) in [(px, py, "gui.proceed"), (bx, by, "gui.back")] {
             ui::button(
                 batch,
@@ -222,6 +238,7 @@ impl ConfirmExperimentsScreen {
                 ui::hovered(cursor, fx, fy, BUTTON, 20.0),
             );
         }
+        phases(crate::screen_draw::RenderPhase::Foreground, batch);
     }
 }
 

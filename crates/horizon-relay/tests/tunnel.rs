@@ -117,8 +117,10 @@ fn join(code: &str, relay: Option<&str>, path: PathMode) -> Result<guest::Tunnel
 /// What the game's client does: connect to the loopback port, send, read
 /// the echo back.
 fn round_trip(tunnel: guest::Tunnel, payload: &[u8]) {
-    let (port, done) = tunnel.serve_loopback().unwrap();
+    let loopback = tunnel.serve_loopback().unwrap();
+    let (port, done) = (loopback.port, loopback.thread);
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(&loopback.token).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let mut w = s.try_clone().unwrap();
     let send = payload.to_vec();
@@ -143,6 +145,7 @@ fn long(code: &str) -> Invite {
 }
 
 #[test]
+#[ignore = "daily"]
 fn the_code_alone_connects_without_any_server() {
     let host = start(None, PathMode::Auto);
     let (code, short) = invite_of(&host, false);
@@ -178,6 +181,39 @@ fn the_code_alone_connects_without_any_server() {
 }
 
 #[test]
+#[ignore = "daily"]
+fn the_loopback_port_takes_only_the_client_with_its_token() {
+    let host = start(None, PathMode::Auto);
+    let (code, _) = invite_of(&host, false);
+    let tunnel = join(&code, None, PathMode::Auto).unwrap();
+    let loopback = tunnel.serve_loopback().unwrap();
+    // Another local process first: a wrong token, then one that sends nothing (a page's fetch
+    // sends HTTP, which is no token either). Neither gets the session.
+    let refused = |send: &[u8]| {
+        let mut s = TcpStream::connect(("127.0.0.1", loopback.port)).unwrap();
+        s.write_all(send).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0u8; 1];
+        // Closed without a byte of the host's server.
+        assert!(matches!(s.read(&mut buf), Ok(0) | Err(_)));
+    };
+    refused(&[0u8; guest::TOKEN_LEN]);
+    refused(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    // The game's client, with the token, still gets it.
+    let mut s = TcpStream::connect(("127.0.0.1", loopback.port)).unwrap();
+    s.write_all(&loopback.token).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let sent = payload(10_000);
+    s.write_all(&sent).unwrap();
+    let mut got = vec![0u8; sent.len()];
+    s.read_exact(&mut got).unwrap();
+    assert!(got == sent, "echo differs");
+    drop(s);
+    loopback.thread.join().unwrap();
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_short_code_through_a_self_hosted_relay() {
     let (relay, address) = relay(generous());
     let host = start(Some(&address), PathMode::Auto);
@@ -203,6 +239,7 @@ fn a_short_code_through_a_self_hosted_relay() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn unreachable_endpoints_fall_back_to_the_relay_in_the_code() {
     let (relay, address) = relay(generous());
     let host = start(Some(&address), PathMode::Auto);
@@ -232,6 +269,7 @@ fn unreachable_endpoints_fall_back_to_the_relay_in_the_code() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn wrong_secrets_fail() {
     let (_relay, address) = relay(generous());
     let host = start(Some(&address), PathMode::Auto);
@@ -290,7 +328,59 @@ fn wrong_secrets_fail() {
     assert_eq!(long(&code2).secret, long(&code).secret);
 }
 
+/// Forwards every connection to `to`, `delay` after it arrives.
+fn slow_door(to: SocketAddr, delay: Duration) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let a = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut inbound) = s else { continue };
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                let Ok(mut outbound) = TcpStream::connect(to) else {
+                    return;
+                };
+                let (mut i2, mut o2) =
+                    (inbound.try_clone().unwrap(), outbound.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut o2, &mut i2);
+                    let _ = i2.shutdown(std::net::Shutdown::Write);
+                });
+                let _ = std::io::copy(&mut inbound, &mut outbound);
+                let _ = outbound.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    a
+}
+
 #[test]
+#[ignore = "daily"]
+fn another_host_answering_first_does_not_end_the_join() {
+    // A housemate's game answers first at one endpoint; the invite's own host, behind a slower
+    // door, at the other.
+    let (other, ours) = (
+        start(None, PathMode::DirectOnly),
+        start(None, PathMode::DirectOnly),
+    );
+    let first = long(&invite_of(&other, false).0).endpoints[0];
+    let mut invite = long(&invite_of(&ours, false).0);
+    let door = slow_door(invite.endpoints[0], Duration::from_millis(300));
+    invite.endpoints = vec![first, door];
+    round_trip(
+        join(&invite.encode(), None, PathMode::DirectOnly).unwrap(),
+        b"ours",
+    );
+    // With no endpoint that takes the code, the wrong code is still what the guest hears.
+    invite.endpoints = vec![first];
+    assert!(matches!(
+        join(&invite.encode(), None, PathMode::DirectOnly),
+        Err(JoinError::WrongCode)
+    ));
+}
+
+#[test]
+#[ignore = "daily"]
 fn bad_codes_unknown_codes_versions_and_ended_invites() {
     assert!(matches!(
         join("hello", None, PathMode::Auto),
@@ -344,6 +434,7 @@ fn bad_codes_unknown_codes_versions_and_ended_invites() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_host_that_never_attaches_is_unreachable() {
     use horizon_friends::wire::{self, FromRelay, ToRelay};
     let (_relay, address) = relay(Config {
@@ -392,6 +483,7 @@ fn a_host_that_never_attaches_is_unreachable() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn relayed_bandwidth_is_capped() {
     let rate = 200_000.0;
     let (_relay, address) = relay(Config {
@@ -417,6 +509,7 @@ fn relayed_bandwidth_is_capped() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn health_and_whoami_answer_http() {
     let (_relay, address) = relay(Config::default());
     let get = |path: &str| {
@@ -436,6 +529,7 @@ fn health_and_whoami_answer_http() {
 /// A first line trickled a byte at a time still has to arrive within
 /// `first_line` in all; past `max_connections`, connections close unanswered.
 #[test]
+#[ignore = "daily"]
 fn slow_first_lines_and_too_many_connections_are_closed() {
     let (_relay, address) = relay(Config {
         first_line: Duration::from_secs(1),

@@ -12,7 +12,7 @@ use ash::{ext, vk};
 use hashbrown::hash_map::Entry;
 use parking_lot::{Mutex, RwLock};
 
-use super::{conv, descriptor::DescriptorCounts, RawTlasInstance};
+use super::{RawTlasInstance, conv, descriptor::DescriptorCounts};
 use crate::TlasInstance;
 
 impl super::DeviceShared {
@@ -2193,7 +2193,7 @@ impl crate::Device for super::Device {
         let pipeline_cache = desc
             .cache
             .map(|it| it.raw)
-            .unwrap_or(vk::PipelineCache::null());
+            .unwrap_or(self.shared.fallback_pipeline_cache);
 
         let mut raw_vec = {
             profiling::scope!("vkCreateGraphicsPipelines");
@@ -2276,7 +2276,7 @@ impl crate::Device for super::Device {
         let pipeline_cache = desc
             .cache
             .map(|it| it.raw)
-            .unwrap_or(vk::PipelineCache::null());
+            .unwrap_or(self.shared.fallback_pipeline_cache);
 
         let mut raw_vec = {
             profiling::scope!("vkCreateComputePipelines");
@@ -2408,7 +2408,7 @@ impl crate::Device for super::Device {
         let pipeline_cache = desc
             .cache
             .map(|it| it.raw)
-            .unwrap_or(vk::PipelineCache::null());
+            .unwrap_or(self.shared.fallback_pipeline_cache);
 
         let fns = self
             .shared

@@ -1,3 +1,25 @@
+// This file is part of the FidelityFX SDK.
+//
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files(the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and /or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions :
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 //! FSR 3.1's frame interpolation (AMD FidelityFX SDK 1.1.4, `ffx_frameinterpolation*`,
 //! MIT), ported to WGSL (`interpolation.wgsl`): the frame halfway between the previous
 //! real frame and this one, from the camera's motion vectors, the optical flow
@@ -810,6 +832,7 @@ mod tests {
     /// clear). The first 10 frames after a reset use the game's vectors only.
     #[test]
     fn moves_what_the_optical_flow_follows_halfway() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut shifts = vec![[0, 0]; 20];
         shifts.push([16, 8]);
         let Some([made, previous, current]) =
@@ -828,6 +851,7 @@ mod tests {
     /// The camera turning: the game's motion vectors put the made frame halfway.
     #[test]
     fn moves_the_view_halfway_with_the_camera() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let size = [512.0, 288.0];
         // What is at a pixel now was 16 pixels to its right last frame.
         let reproject = Mat4::from_translation(glam::Vec3::new(32.0 / size[0], 0.0, 0.0));
@@ -846,6 +870,7 @@ mod tests {
     /// made frame is halfway, as with the camera's.
     #[test]
     fn moves_what_has_its_own_motion_vectors_halfway() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let size = [512.0, 288.0];
         let shifts = [[0, 0], [16, 8], [32, 16], [48, 24]];
         let mv = [-16.0 / size[0], -8.0 / size[1]];

@@ -5,6 +5,9 @@
 //! (`Arena::translucent_indices`): their back-to-front list then stays in one
 //! page of each and draws in a few multi-draws.
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
+#[path = "arena/source_tests.rs"]
+mod source_tests;
 
 /// Ranges are rounded up to this many vertices to limit fragmentation, and
 /// start at multiples of it (`flat` names sections by these blocks).
@@ -82,6 +85,8 @@ impl FreeList {
 /// One vertex buffer of the arena; only the newest page grows.
 struct Page {
     buffer: wgpu::Buffer,
+    /// Optional shader-pack source records, indexed by the vertex index / 4.
+    sources: Option<wgpu::Buffer>,
     /// Capacity in vertices.
     capacity: u64,
     free: FreeList,
@@ -110,12 +115,21 @@ pub struct Arena {
     pages: Vec<Option<Page>>,
     stride: u64,
     page_limit: u64,
+    /// Vertices past which a page stops growing and the arena starts another,
+    /// below `page_limit` (`page_ceiling`: 64-bit Android).
+    growth_limit: Option<u64>,
+    /// A video-memory buffer of `initial_capacity` vertices for the next page of
+    /// that size: an emptied page kept (`trim`, `clear`) or one made ahead of the
+    /// first upload (`prewarm`). Only in arenas of `PAGE_BYTES` pages.
+    spare: Option<wgpu::Buffer>,
+    keeps_spare: bool,
     initial_capacity: u64,
     usage: wgpu::BufferUsages,
     /// A page being emptied (`Arena::close`): nothing is placed in it.
     closing: Option<u32>,
     /// A page had to go to system memory (logged once).
     spilled: bool,
+    sources_enabled: bool,
     /// Tests: GPU-local pages fail as if video memory were full.
     #[cfg(test)]
     video_memory_full: bool,
@@ -130,6 +144,8 @@ impl Arena {
         } else {
             wgpu::BufferUsages::VERTEX
         };
+        // BLAS builds read sections' vertices here (`ray_scene`).
+        let usage = usage | super::surface_setup::ray_query::blas_input(device);
         Self::with_usage(device, stride, capacity, usage, PAGE_BYTES)
     }
     /// Sorted translucent indices; `storage` when compute passes read them.
@@ -155,6 +171,18 @@ impl Arena {
     pub fn translucent_indices(device: &wgpu::Device, capacity: u64) -> Self {
         let usage = wgpu::BufferUsages::INDEX;
         Self::with_usage(device, 4, capacity, usage, LARGE_PAGE_BYTES)
+    }
+    /// World-space ray-tracing positions (`BLAS_INPUT`): the triangle soup `rt`
+    /// builds one BLAS per section over. Never compacted: a range stays valid
+    /// until its section is released, unlike the render arenas' ranges.
+    pub fn ray_tracing(device: &wgpu::Device) -> Self {
+        Self::with_usage(
+            device,
+            12,
+            1 << 16,
+            wgpu::BufferUsages::BLAS_INPUT,
+            PAGE_BYTES,
+        )
     }
     /// The sorted-index arena and, when `split`, the translucent arena
     /// (vertices of `stride`) with large pages, which no shader binds;
@@ -191,15 +219,24 @@ impl Arena {
             bytes = bytes.min(limits.max_storage_buffer_binding_size);
         }
         let page_limit = (bytes / stride) / GRAIN * GRAIN;
-        let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
+        let ceiling = page_ceiling(page_bytes);
+        let growth_limit = (ceiling < page_bytes)
+            .then(|| (ceiling.min(bytes) / stride / GRAIN * GRAIN).max(GRAIN));
+        let capacity = capacity
+            .next_multiple_of(GRAIN)
+            .min(growth_limit.unwrap_or(page_limit).min(page_limit));
         Self {
             pages: Vec::new(),
             stride,
             page_limit,
+            growth_limit,
+            spare: None,
+            keeps_spare: page_bytes == PAGE_BYTES,
             initial_capacity: capacity,
             usage,
             closing: None,
             spilled: false,
+            sources_enabled: false,
             #[cfg(test)]
             video_memory_full: false,
         }
@@ -214,13 +251,17 @@ impl Arena {
         capacity: u64,
         spill: bool,
     ) -> Option<(wgpu::Buffer, bool)> {
+        if let Some(buffer) = self.take_spare(capacity) {
+            return Some((buffer, false));
+        }
         let usage = self.usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+        let (label, bytes) = ("Section buffer arena", capacity * self.stride);
         #[cfg(test)]
         let local = (!self.video_memory_full)
-            .then(|| try_create(device, capacity * self.stride, usage))
+            .then(|| create_page(device, label, bytes, usage))
             .flatten();
         #[cfg(not(test))]
-        let local = try_create(device, capacity * self.stride, usage);
+        let local = create_page(device, label, bytes, usage);
         let local = local.map(|buffer| (buffer, false));
         local.or_else(|| {
             // Mappable buffers are placed in host-visible memory, which the
@@ -232,11 +273,7 @@ impl Arena {
             {
                 return None;
             }
-            let buffer = try_create(
-                device,
-                capacity * self.stride,
-                usage | wgpu::BufferUsages::MAP_WRITE,
-            )?;
+            let buffer = create_page(device, label, bytes, usage | wgpu::BufferUsages::MAP_WRITE)?;
             if !std::mem::replace(&mut self.spilled, true) {
                 log::warn!(
                     "Horizon: video memory is full; more terrain is kept in system memory \
@@ -252,7 +289,11 @@ impl Arena {
     }
     /// Bytes of every page's buffer.
     pub fn bytes(&self) -> u64 {
-        self.pages.iter().flatten().map(|p| p.capacity).sum::<u64>() * self.stride
+        self.pages
+            .iter()
+            .flatten()
+            .map(|p| p.capacity * self.stride + p.sources.as_ref().map_or(0, wgpu::Buffer::size))
+            .sum()
     }
     /// The most vertices a page holds.
     pub fn page_vertices(&self) -> u64 {
@@ -284,6 +325,65 @@ impl Arena {
             .expect("live arena page")
             .buffer
     }
+
+    pub fn sources(&self, page: u32) -> Option<&wgpu::Buffer> {
+        self.pages[page as usize].as_ref()?.sources.as_ref()
+    }
+
+    fn source_buffer(device: &wgpu::Device, capacity: u64) -> Option<wgpu::Buffer> {
+        if capacity / 4 * 8 > device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
+        try_create(
+            device,
+            "Terrain quad sources",
+            capacity / 4 * 8,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        )
+    }
+
+    /// Native meshes allocate no sidecar. Once needed, existing pages also get a zeroed
+    /// sidecar so moves can retain sources. Failure leaves geometry intact and attributes
+    /// unknown; a later source upload may retry its page.
+    pub fn write_sources(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        uploads: &mut super::upload::Uploads,
+        page: u32,
+        start: u64,
+        vertices: u64,
+        sources: &[crate::mesher::TerrainSource],
+    ) {
+        if !sources.is_empty() && !self.sources_enabled {
+            self.sources_enabled = true;
+            for p in self.pages.iter_mut().flatten() {
+                p.sources = Self::source_buffer(device, p.capacity);
+            }
+        }
+        let p = self.pages[page as usize].as_mut().expect("live arena page");
+        if p.sources.is_none() && !sources.is_empty() {
+            p.sources = Self::source_buffer(device, p.capacity);
+        }
+        if let Some(buffer) = &p.sources {
+            let bytes = vertices / 4 * 8;
+            if bytes > 0 {
+                // Recycled ranges must never keep another mesh's identity, even for a
+                // missing or incomplete sidecar. Zero records have no valid bit.
+                encoder.clear_buffer(buffer, start / 4 * 8, Some(bytes));
+                if sources.len() as u64 == vertices / 4 {
+                    uploads.buffer(
+                        encoder,
+                        buffer,
+                        start / 4 * 8,
+                        bytemuck::cast_slice(sources),
+                    );
+                }
+            }
+        }
+    }
     /// Bytes of one vertex (or index).
     pub fn stride(&self) -> u64 {
         self.stride
@@ -310,12 +410,12 @@ impl Arena {
         }
         let last = self.pages.len().saturating_sub(1);
         if let Some(page) = self.pages.last().and_then(Option::as_ref)
-            && page.capacity < self.page_limit
+            && page.capacity < self.ceiling()
             && self.closing != Some(last as u32)
         {
             let current = page.capacity;
             let grown = self.grown(current, len);
-            if (grown - current >= len || grown == self.page_limit)
+            if (grown - current >= len || grown == self.ceiling())
                 && self.grow(device, encoder, last, grown)
                 && let Some(start) = self.pages[last].as_mut().unwrap().free.take(len)
             {
@@ -327,6 +427,7 @@ impl Arena {
         } else {
             1 << 20
         }
+        .min(self.ceiling())
         .max(len)
         .min(self.page_limit);
         // A page just large enough when memory is short.
@@ -339,6 +440,10 @@ impl Arena {
         let start = free.take(len).expect("a new page fits one section");
         let page = Page {
             buffer,
+            sources: self
+                .sources_enabled
+                .then(|| Self::source_buffer(device, capacity))
+                .flatten(),
             capacity,
             free,
             host,
@@ -454,6 +559,10 @@ impl Arena {
         let free = FreeList::new(capacity);
         self.pages.push(Some(Page {
             buffer,
+            sources: self
+                .sources_enabled
+                .then(|| Self::source_buffer(device, capacity))
+                .flatten(),
             capacity,
             free,
             host,
@@ -486,6 +595,21 @@ impl Arena {
             to.1 * self.stride,
             vertices * self.stride,
         );
+        if let Some(to_sources) = self.sources(to.0) {
+            let bytes = vertices / 4 * 8;
+            if bytes > 0 {
+                match self.sources(from.0) {
+                    Some(from_sources) => encoder.copy_buffer_to_buffer(
+                        from_sources,
+                        from.1 / 4 * 8,
+                        to_sources,
+                        to.1 / 4 * 8,
+                        bytes,
+                    ),
+                    None => encoder.clear_buffer(to_sources, to.1 / 4 * 8, Some(bytes)),
+                }
+            }
+        }
     }
     pub fn release(&mut self, page: u32, start: u64, vertices: u64) {
         let len = Self::span(vertices).min(self.page_limit);
@@ -524,8 +648,15 @@ impl Arena {
     /// by at most `PAGE_BYTES` past that size, so a large page is never left
     /// half empty (nor held twice during the copy) by hundreds of MiB.
     fn grown(&self, current: u64, len: u64) -> u64 {
-        let step = current.min(PAGE_BYTES / self.stride);
-        (current + step).max(current + len).min(self.page_limit)
+        // Bound geometric growth as in the Android fork: copying a larger page
+        // temporarily holds both allocations in the 32-bit address space.
+        let limit = if cfg!(all(target_os = "android", target_pointer_width = "32")) {
+            (8 * 1024 * 1024 / self.stride / GRAIN * GRAIN).max(GRAIN)
+        } else {
+            PAGE_BYTES / self.stride
+        };
+        let step = current.min(limit);
+        (current + step).max(current + len).min(self.ceiling())
     }
     /// Moves a page into a larger buffer; false (the page unchanged) when
     /// there is no memory for it. A page past `PAGE_BYTES` grows in video
@@ -543,9 +674,17 @@ impl Arena {
         let Some((buffer, host)) = self.create(device, capacity, spill) else {
             return false;
         };
+        let sources = self
+            .sources_enabled
+            .then(|| Self::source_buffer(device, capacity))
+            .flatten();
         let old = self.pages[page].as_mut().expect("live arena page");
         // Copies recorded for the old buffer run before this one.
         encoder.copy_buffer_to_buffer(&old.buffer, 0, &buffer, 0, old.capacity * self.stride);
+        if let (Some(from), Some(to)) = (&old.sources, &sources) {
+            encoder.copy_buffer_to_buffer(from, 0, to, 0, from.size());
+        }
+        old.sources = sources;
         let previous = old.capacity;
         old.buffer = buffer;
         old.host = host;
@@ -556,16 +695,20 @@ impl Arena {
     /// Reclaim after an upload batch, so replacing a section can reuse its range. Gives back
     /// the buffers of the pages it emptied, for a [`Graveyard`].
     pub fn trim(&mut self) -> Vec<wgpu::Buffer> {
-        let mut released = Vec::new();
+        let mut emptied = Vec::new();
         for page in &mut self.pages {
             if page
                 .as_ref()
                 .is_some_and(|p| p.free.0.len() == 1 && p.free.0.get(&0) == Some(&p.capacity))
                 && let Some(p) = page.take()
             {
-                released.push(p.buffer);
+                emptied.push(p);
             }
         }
+        let released = emptied
+            .into_iter()
+            .filter_map(|p| self.keep_spare(p))
+            .collect();
         if self.closing.is_some_and(|page| !self.has_page(page)) {
             self.closing = None;
         }
@@ -578,8 +721,73 @@ impl Arena {
     /// Drops every page; gives back their buffers, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
-        self.pages.drain(..).flatten().map(|p| p.buffer).collect()
+        let pages: Vec<Page> = self.pages.drain(..).flatten().collect();
+        pages
+            .into_iter()
+            .filter_map(|p| self.keep_spare(p))
+            .collect()
     }
+    /// Makes the first page's buffer ahead of the first upload (on the level
+    /// loading screen), where the arena has no page and no spare: the first
+    /// sections then do not wait for the driver to allocate it.
+    pub fn prewarm(&mut self, device: &wgpu::Device) {
+        if !self.keeps_spare || self.spare.is_some() || self.pages.iter().any(Option::is_some) {
+            return;
+        }
+        if let Some((buffer, false)) = self.create(device, self.initial_capacity, false) {
+            self.spare = Some(buffer);
+        }
+    }
+    /// The vertices a page grows to at most (`growth_limit`, within `page_limit`).
+    fn ceiling(&self) -> u64 {
+        self.growth_limit
+            .map_or(self.page_limit, |limit| limit.min(self.page_limit))
+    }
+    /// The spare buffer (`spare`) for a page of `capacity` vertices.
+    fn take_spare(&mut self, capacity: u64) -> Option<wgpu::Buffer> {
+        if capacity == self.initial_capacity {
+            self.spare.take()
+        } else {
+            None
+        }
+    }
+    /// An emptied page's buffer, unless it becomes the spare (`spare`): one in
+    /// video memory of the first page's size, where none is kept yet.
+    fn keep_spare(&mut self, page: Page) -> Option<wgpu::Buffer> {
+        if self.keeps_spare
+            && self.spare.is_none()
+            && !page.host
+            && page.capacity == self.initial_capacity
+        {
+            self.spare = Some(page.buffer);
+            None
+        } else {
+            Some(page.buffer)
+        }
+    }
+}
+
+/// The bytes past which pages of `page_bytes` stop growing: 32 MiB on 64-bit
+/// Android for `PAGE_BYTES` pages (section vertices and their indices). A
+/// phone's driver takes long to make a large buffer, and a page that grows is
+/// copied while both buffers are held, so new pages of this size come instead.
+/// Translucent quads' large pages keep their size. Adapted from
+/// Vasysik/horizon-android (`Arena::growth_limit`, its commits acfb2bae43 and
+/// 8c08d71508), MIT, copyright (c) 2026 Ludovic Marie and the Horizon
+/// contributors; see THIRD_PARTY_NOTICES.md.
+#[cfg(all(target_os = "android", target_pointer_width = "64"))]
+fn page_ceiling(page_bytes: u64) -> u64 {
+    if page_bytes == PAGE_BYTES {
+        32 << 20
+    } else {
+        page_bytes
+    }
+}
+/// The bytes past which pages of `page_bytes` stop growing: all of them here
+/// (see the 64-bit Android one).
+#[cfg(not(all(target_os = "android", target_pointer_width = "64")))]
+fn page_ceiling(page_bytes: u64) -> u64 {
+    page_bytes
 }
 
 /// Frames a released page waits before it is freed: by then the GPU is done with the frames that
@@ -636,16 +844,34 @@ pub fn free_later<T: Send + 'static>(items: Vec<T>) {
 
 /// `create_buffer` with an out-of-memory failure returned instead of raised
 /// (raised errors are fatal).
-fn try_create(device: &wgpu::Device, size: u64, usage: wgpu::BufferUsages) -> Option<wgpu::Buffer> {
+pub(super) fn try_create(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> Option<wgpu::Buffer> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Section buffer arena"),
+        label: Some(label),
         size,
         usage,
         mapped_at_creation: false,
     });
     // Native error scopes resolve at once.
     pollster::block_on(scope.pop()).is_none().then_some(buffer)
+}
+
+/// `try_create` for a page's buffer, in a span of its own: a phone's driver can take hundreds of
+/// milliseconds here. Adapted from Vasysik/horizon-android (`arena_buffer_create`), MIT.
+fn create_page(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> Option<wgpu::Buffer> {
+    crate::spans::time("arena_buffer_create", || {
+        try_create(device, label, size, usage)
+    })
 }
 
 #[cfg(test)]
@@ -722,6 +948,7 @@ mod tests {
 
     #[test]
     fn writes_recorded_before_a_grow_reach_the_grown_page() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -755,6 +982,7 @@ mod tests {
     /// empties the arena at once), while a page keeping some ranges frees only the others.
     #[test]
     fn ranges_released_at_once_free_exactly_their_vertices() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -788,6 +1016,7 @@ mod tests {
 
     #[test]
     fn a_sparse_page_empties_into_the_others_and_is_reclaimed() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -860,10 +1089,12 @@ mod tests {
     /// section holds in the section arena, data and all. Split, that is its
     /// solid quads alone, and nothing of a section without any, whose (0, 0)
     /// names no range of page 0; else solid and translucent quads together,
-    /// `translucent_at` along.
+    /// `translucent_at` along. GPU culling's records of the sections with solid
+    /// quads move with them.
     #[test]
     fn compaction_moves_what_sections_hold_in_the_section_arena() {
-        use super::super::{Part, SectionGpu, move_off_page};
+        let _gpu = crate::gfx::test_gpu::lock();
+        use super::super::{Part, SectionGpu, gpu_culling, move_off_page};
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -874,11 +1105,16 @@ mod tests {
             start,
             translucent_at,
             solid,
+            solid_slots: u64::from(solid) * 4,
+            packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,
             sort: super::super::translucency::SortState::new(Vec::new()),
             sorted_indices: None,
             flat_id: None,
+            gpu_id: None,
+            gpu_fading: false,
             fading: None,
             leaving: None,
             animated_layers: Box::new([]),
@@ -926,6 +1162,16 @@ mod tests {
                 .iter()
                 .map(|s| (s.page, s.start, s.translucent_at))
                 .collect();
+            // The sections with solid quads have records, on page 0, each with
+            // its cell's box.
+            let mut records = gpu_culling::Records::default();
+            for (i, s) in sections.iter_mut().enumerate() {
+                if s.solid > 0 {
+                    s.gpu_id = Some(records.insert(s.record((i as i32, 0, 0), None)));
+                }
+            }
+            let recorded = records.live() as u32;
+            assert_eq!(records.page_sections(), [recorded], "split {split}");
             arena.close(0);
             let mut encoder = device.create_command_encoder(&Default::default());
             let meshes = sections.iter_mut();
@@ -934,6 +1180,7 @@ mod tests {
                 &mut arena,
                 &mut encoder,
                 None,
+                Some(&mut records),
                 meshes,
                 0,
                 Part::Section { split },
@@ -943,6 +1190,10 @@ mod tests {
             let word =
                 |(page, at): (u32, u64)| read(&device, &queue, arena.buffer(page), at * stride);
             for (i, s) in sections.iter().enumerate() {
+                // Its record names its solid quads where they are now, its box kept.
+                let record = (s.solid > 0).then(|| s.record((i as i32, 0, 0), None));
+                let held = s.gpu_id.and_then(|id| records.at(id));
+                assert_eq!(held, record.as_ref(), "split {split}, section {i}");
                 let Some((page, start, len)) = s.vertex_ranges(split).0 else {
                     assert_eq!(
                         (s.page, s.start, s.translucent_at),
@@ -961,6 +1212,8 @@ mod tests {
                     }
                 }
             }
+            // Page 0's count went to page 1 with them.
+            assert_eq!(records.page_sections(), [0, recorded], "split {split}");
             // Page 0 empties without a range given twice, and page 1 took a grain
             // per section moved: one is left.
             arena.trim();
@@ -976,6 +1229,7 @@ mod tests {
     /// put them at another section's origin.
     #[test]
     fn moved_translucent_quads_keep_their_section_s_flat_id() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use super::super::{Part, SectionGpu, flat, move_off_page, upload::Uploads};
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
@@ -993,7 +1247,7 @@ mod tests {
             label: None,
             entries: &[],
         });
-        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _| {
+        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _, _| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -1016,7 +1270,22 @@ mod tests {
                 cache: None,
             })
         };
-        let mut flat = flat::Flat::new(&device, &terrain_layout, 4 * GRAIN, 0, pipeline);
+        let pipeline = &pipeline;
+        let solid = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _| {
+            super::super::SolidPipeline {
+                plain: pipeline(layout, label, "", "", None, None, true),
+                hdr: None,
+            }
+        };
+        let mut flat = flat::Flat::new(
+            &device,
+            &terrain_layout,
+            4 * GRAIN,
+            0,
+            false,
+            pipeline,
+            solid,
+        );
         let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
         let mut translucent = Arena::translucent(&device, stride, 4 * GRAIN);
         translucent.page_limit = 4 * GRAIN;
@@ -1050,11 +1319,16 @@ mod tests {
             start: 0,
             translucent_at: (0, at),
             solid: 64,
+            solid_slots: 64 * 4,
+            packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(64),
             translucent: 128,
             sort: super::super::translucency::SortState::new(Vec::new()),
             sorted_indices: None,
             flat_id: Some(id),
+            gpu_id: None,
+            gpu_fading: false,
             fading: None,
             leaving: None,
             animated_layers: Box::new([]),
@@ -1065,6 +1339,7 @@ mod tests {
             &mut translucent,
             &mut encoder,
             Some((&mut flat, &device, &mut uploads)),
+            None,
             std::iter::once(&mut section),
             0,
             Part::Translucent,
@@ -1090,6 +1365,7 @@ mod tests {
     /// submitted, so a grown page bound whole had its new tail cleared on the GPU.
     #[test]
     fn large_pages_are_bound_up_to_their_last_range_in_use() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1113,6 +1389,7 @@ mod tests {
 
     #[test]
     fn empty_pages_are_reclaimed_without_moving_live_ranges() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1157,6 +1434,7 @@ mod tests {
     /// whole-page storage bindings of flat draws and shader packs included.
     #[test]
     fn pages_stay_within_their_caps_and_the_device_limits() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let devices = devices();
         if devices.is_empty() {
             eprintln!("no GPU adapter: skipped");
@@ -1191,6 +1469,7 @@ mod tests {
     /// `translucent_split`), translucent quads keep to the section arena.
     #[test]
     fn translucent_arenas_follow_the_layout() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let devices = devices();
         if devices.is_empty() {
             eprintln!("no GPU adapter: skipped");
@@ -1225,6 +1504,7 @@ mod tests {
     /// Pages double up to `PAGE_BYTES`, then grow by `PAGE_BYTES` at most.
     #[test]
     fn large_pages_grow_by_bounded_steps() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1232,7 +1512,11 @@ mod tests {
         let mut arena = Arena::translucent(&device, 24, GRAIN);
         // Exercise the policy past the test device's own buffer limit.
         arena.page_limit = LARGE_PAGE_BYTES / 24 / GRAIN * GRAIN;
-        let step = PAGE_BYTES / 24;
+        let step = if cfg!(all(target_os = "android", target_pointer_width = "32")) {
+            (8 * 1024 * 1024 / 24) / GRAIN * GRAIN
+        } else {
+            PAGE_BYTES / 24
+        };
         assert_eq!(arena.grown(1 << 18, GRAIN), 1 << 19);
         assert_eq!(arena.grown(step, GRAIN), 2 * step);
         assert_eq!(arena.grown(3 * step, GRAIN), 4 * step);
@@ -1251,6 +1535,7 @@ mod tests {
     /// `trim` returns it. Translucent vertices and sorted indices alike.
     #[test]
     fn a_large_page_moves_into_one_of_the_size_its_ranges_get() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use super::super::{Part, SectionGpu, begin_shrink, move_off_page};
         // Where system memory could take the new page, it must not.
         let Some((device, queue)) = device_with(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS) else {
@@ -1272,11 +1557,16 @@ mod tests {
                 start: 0,
                 translucent_at: if indices { (7, 7) } else { at },
                 solid,
+                solid_slots: u64::from(solid) * 4,
+                packed: false,
+                packed_far: false,
                 sides: crate::mesher::Sides::unsorted(solid),
                 translucent,
                 sort: super::super::translucency::SortState::new(Vec::new()),
                 sorted_indices: (translucent > 0).then_some(if indices { at } else { (7, 7) }),
                 flat_id: None,
+                gpu_id: None,
+                gpu_fading: false,
                 fading: None,
                 leaving: None,
                 animated_layers: Box::new([]),
@@ -1329,7 +1619,9 @@ mod tests {
                          meshes: &mut [(u32, SectionGpu)],
                          budget: &mut u64| {
                 let held = meshes.iter_mut().map(|(_, s)| s);
-                assert!(move_off_page(arena, encoder, None, held, 0, part, budget));
+                assert!(move_off_page(
+                    arena, encoder, None, None, held, 0, part, budget
+                ));
                 let on = |s: &SectionGpu| part.of(s).is_some_and(|r| r.0 == 1);
                 meshes.iter().filter(|(_, s)| on(s)).count()
             };
@@ -1381,6 +1673,7 @@ mod tests {
     /// smaller: at the smallest page that shrinks and at the largest.
     #[test]
     fn large_pages_shrink_when_that_halves_them_or_saves_a_page() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1389,11 +1682,12 @@ mod tests {
         arena.page_limit = LARGE_PAGE_BYTES / 24 / GRAIN * GRAIN;
         let (limit, step) = (arena.page_limit, PAGE_BYTES / 24);
         // `oversized` looks at the counts only: a small buffer stands in.
-        let buffer = try_create(&device, 4, wgpu::BufferUsages::VERTEX).unwrap();
+        let buffer = try_create(&device, "Stand-in page", 4, wgpu::BufferUsages::VERTEX).unwrap();
         let mut shrinks = |capacity: u64, used: u64, host: bool| {
             let free = FreeList(BTreeMap::from([(used, capacity - used)]));
             let buffer = buffer.clone();
             arena.pages = vec![Some(Page {
+                sources: None,
                 buffer,
                 capacity,
                 free,
@@ -1423,6 +1717,7 @@ mod tests {
 
     #[test]
     fn clearing_an_arena_releases_buffers_and_can_allocate_again() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1519,6 +1814,7 @@ mod tests {
 
     #[test]
     fn full_video_memory_spills_to_system_memory() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device_with(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS) else {
             return;
         };
@@ -1553,6 +1849,7 @@ mod tests {
 
     #[test]
     fn no_memory_left_is_not_an_error() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             return;
         };

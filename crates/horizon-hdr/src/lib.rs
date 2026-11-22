@@ -6,6 +6,50 @@
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
+/// The opt-in for wgpu's experimental features, which device creation refuses without.
+/// The game crates forbid unsafe code, so the acknowledgment lives here. Only the
+/// ray-query feature is ever asked for, with a plain device as the fallback.
+pub fn enable_experimental_features() -> wgpu::ExperimentalFeatures {
+    // Safety: the token itself opens nothing; it only permits the request.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
+/// The Vulkan device extensions wgpu's `EXPERIMENTAL_RAY_QUERY` needs, in the order
+/// `wgpu-hal` checks them: without all four the adapter offers no ray queries and the
+/// Ray Tracing switch stays greyed out.
+pub const RAY_QUERY_EXTENSIONS: [&str; 4] = [
+    "VK_KHR_deferred_host_operations",
+    "VK_KHR_acceleration_structure",
+    "VK_KHR_buffer_device_address",
+    "VK_KHR_ray_query",
+];
+
+/// Which of [`RAY_QUERY_EXTENSIONS`] this adapter's driver does not list (`None` without
+/// a Vulkan adapter to ask). Empty means the driver lists everything ray queries need.
+#[cfg(not(target_os = "macos"))]
+pub fn ray_query_missing_extensions(adapter: &wgpu::Adapter) -> Option<Vec<&'static str>> {
+    use wgpu::hal::api::Vulkan;
+    // Safety: read-only enumeration on the adapter's own physical device.
+    let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
+    let instance = hal.shared_instance().raw_instance();
+    let offered =
+        unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) }
+            .ok()?;
+    Some(
+        RAY_QUERY_EXTENSIONS
+            .into_iter()
+            .filter(|need| {
+                !offered.iter().any(|have| {
+                    have.extension_name_as_c_str()
+                        .ok()
+                        .and_then(|n| n.to_str().ok())
+                        == Some(*need)
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.
 /// `None` leaves opening to wgpu.
@@ -47,16 +91,19 @@ pub fn open_vulkan_device(
     Some(unsafe { adapter.create_device_from_hal(open, desc) })
 }
 
+/// wgpu's opt-in to its `EXPERIMENTAL_*` features, which the crates that forbid unsafe code
+/// can't give: hardware ray queries, asked for only when the player turns ray tracing on
+/// (`gfx/ray_query.rs` in horizon-client-render).
+pub fn experimental_features() -> wgpu::ExperimentalFeatures {
+    // Safety: wgpu warns that its experimental features may have bugs that reach undefined
+    // behaviour through safe calls. Horizon accepts that only on request, for ray queries.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
 /// Tells the compositor, through `VK_EXT_hdr_metadata`, that the swapchain's
 /// content is BT.709, peaks at `peak` nits and is no darker than `black`. Needs a
 /// device from `open_vulkan_device` and a configured surface; does nothing otherwise.
-pub fn set_metadata(
-    device: &wgpu::Device,
-    surface: &wgpu::Surface<'_>,
-    paper_white: f32,
-    peak: f32,
-    black: f32,
-) {
+pub fn set_metadata(device: &wgpu::Device, surface: &wgpu::Surface<'_>, peak: f32, black: f32) {
     #[cfg(not(target_os = "macos"))]
     {
         use wgpu::hal::api::Vulkan;
@@ -77,23 +124,41 @@ pub fn set_metadata(
         let Some(swapchain) = hal_surface.raw_native_swapchain() else {
             return;
         };
-        let xy = |x, y| ash::vk::XYColorEXT { x, y };
-        let metadata = ash::vk::HdrMetadataEXT::default()
-            .display_primary_red(xy(0.64, 0.33))
-            .display_primary_green(xy(0.30, 0.60))
-            .display_primary_blue(xy(0.15, 0.06))
-            .white_point(xy(0.3127, 0.3290))
-            .max_luminance(peak)
-            .min_luminance(black)
-            .max_content_light_level(peak)
-            .max_frame_average_light_level(paper_white.min(peak));
         let loader = ash::ext::hdr_metadata::Device::new(
             hal_device.shared_instance().raw_instance(),
             hal_device.raw_device(),
         );
         // Safety: a live swapchain of this device, one metadata entry for it.
-        unsafe { loader.set_hdr_metadata(&[swapchain], &[metadata]) };
+        unsafe { loader.set_hdr_metadata(&[swapchain], &[metadata(peak, black)]) };
     }
     #[cfg(target_os = "macos")]
-    let _ = (device, surface, paper_white, peak, black);
+    let _ = (device, surface, peak, black);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn metadata(peak: f32, black: f32) -> ash::vk::HdrMetadataEXT<'static> {
+    let xy = |x, y| ash::vk::XYColorEXT { x, y };
+    ash::vk::HdrMetadataEXT::default()
+        .display_primary_red(xy(0.64, 0.33))
+        .display_primary_green(xy(0.30, 0.60))
+        .display_primary_blue(xy(0.15, 0.06))
+        .white_point(xy(0.3127, 0.3290))
+        .max_luminance(peak)
+        .min_luminance(black)
+        .max_content_light_level(peak)
+        // Unknown (CTA-861.3): the game can't know a frame's average ahead of it, and
+        // sky or snow can average above paper white; a display may dim against a low one.
+        .max_frame_average_light_level(0.0)
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    #[test]
+    fn the_frame_average_is_sent_as_unknown() {
+        let m = super::metadata(1000.0, 0.05);
+        assert_eq!(m.max_frame_average_light_level, 0.0);
+        assert_eq!(m.max_content_light_level, 1000.0);
+        assert_eq!(m.max_luminance, 1000.0);
+        assert_eq!(m.min_luminance, 0.05);
+    }
 }

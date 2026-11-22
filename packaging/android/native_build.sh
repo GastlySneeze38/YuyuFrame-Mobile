@@ -14,11 +14,12 @@
 # NATIVE_CACHE (default ~/.cache/starling-native) keeps horizon-mixins and the build folder with
 # its target between builds: a file a build leaves as it was keeps its time, so Cargo recompiles
 # only the crates the mods change. PROFILE defaults to fast, a release's.
+# ABI selects the Android architecture (default arm64-v8a); VARIANT can be --preview or --dev.
 set -euo pipefail
 
 MIXINS_GIT=https://github.com/horizon-rust/horizon-mixins
 # Horizon's launcher's (launcher/src/native_mods.rs, MIXINS_REV).
-MIXINS_REV=ddd9700b21997c95d95ac6ee5ecafe3830cf622a
+MIXINS_REV=5a64af938ec86b00d53d16a408aabc0038fb3e57
 
 fail() { echo "native_build: $*" >&2; exit 1; }
 [ $# -ge 3 ] || fail "usage: native_build.sh SOURCE OUT BUNDLE..."
@@ -28,6 +29,16 @@ out=$(cd "$2" && pwd)
 shift 2
 cache=${NATIVE_CACHE:-$HOME/.cache/starling-native}
 profile=${PROFILE:-fast}
+abi=${ABI:-arm64-v8a}
+case "$abi" in
+  arm64-v8a|armeabi-v7a|x86|x86_64) ;;
+  *) fail "unsupported Android ABI: $abi" ;;
+esac
+variant=${VARIANT:-}
+case "$variant" in
+  ''|--preview|--dev) ;;
+  *) fail "unsupported APK variant: $variant" ;;
+esac
 mkdir -p "$cache"
 
 tools=$cache/mixins-${MIXINS_REV:0:12}
@@ -36,6 +47,9 @@ if [ ! -x "$tools/bin/horizon-mixins" ]; then
 fi
 
 commit=$(git -C "$source" rev-parse HEAD)
+# horizon-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
+# the build folder below is a copy without the repository.
+export HORIZON_GAME_BUILD_ID=$commit
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -63,6 +77,19 @@ grep -qxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" \
 grep -vxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" > "$work/lib.rs"
 cp "$work/lib.rs" "$work/source/crates/horizon-client/src/lib.rs"
 
+# Horizon declares the game's modules in files its build script writes (`include!` of OUT_DIR),
+# which horizon-mixins cannot follow: they are written out as plain module lines in this copy
+# first, as Horizon's launcher does (horizon-materialize, crates/horizon-mod-api-gen). Before the
+# mods are adapted: native_mod_adapt.py finds where things went in the module tree it leaves.
+cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
+CARGO_TARGET_DIR=$cache/materialize-target cargo run --quiet --locked --offline \
+  --manifest-path "$work/source/Cargo.toml" -p horizon-mod-api-gen --bin horizon-materialize \
+  -- "$work/source"
+# What horizon-mixins refuses in the fork's source, made readable in this copy (native_mixins_source.py): modules
+# named through a parent folder (`#[path = "../x.rs"]`) move next to their module, and the prebuilt game's
+# `#[replaceable]` markers (an attribute macro that changes nothing) go.
+python3 "$source/packaging/android/native_mixins_source.py" "$work/source"
+
 # The bundles, each pinned to the commit built here when it pins one (Starling's commits are not
 # Horizon's; a mod that calls what Starling changed fails in the compiler).
 mkdir "$work/mods"
@@ -79,37 +106,36 @@ python3 "$source/packaging/android/native_mod_adapt.py" "$work/source" "$work/mo
 # What went in names the build: the commit, the profile, horizon-mixins, every bundle file.
 key=$(
   {
-    echo "$commit $profile $MIXINS_REV"
+    echo "$commit $profile $abi $variant $MIXINS_REV"
     (cd "$work/mods" && find . -type f -print0 | sort -z | xargs -0 sha256sum)
   } | sha256sum | cut -c1-16
 )
 echo "native_build: build $key of $commit with $(ls "$work/mods" | tr '\n' ' ')"
 
-cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
 "$tools/bin/horizon-mixins" apply --workspace "$work/source" --mods "$work/mods" \
   --out "$work/stage"
 
 # Into the build folder: a file whose bytes changed gets the time of now (no -t), one that did not
 # keeps its time, so Cargo recompiles what changed even when the commit is older than the last
 # build. horizon-android's manifest goes back to building android_lib.rs.
-build=$cache/build
+build=$cache/build-$abi
 mkdir -p "$build"
 rsync -r --checksum --delete --exclude /target/ --exclude "/$manifest" \
-  --exclude /crates/horizon-android/plan-stub.rs "$work/stage/" "$build/"
+  --exclude /crates/horizon-android/plan-stub.rs --exclude /native-hooks.json "$work/stage/" "$build/"
 git -C "$source" show "HEAD:$manifest" > "$work/manifest"
 cmp -s "$work/manifest" "$build/$manifest" || cp "$work/manifest" "$build/$manifest"
 
 rm -f "$build"/target/android/starling-*.apk
 # NATIVE_LIBRARY_ONLY: the library is all the game downloads, and the APK takes time to make.
-(cd "$build" && python3 packaging/android/build_apk.py --profile "$profile" \
+(cd "$build" && python3 packaging/android/build_apk.py --abi "$abi" --profile "$profile" $variant \
   ${NATIVE_LIBRARY_ONLY:+--library-only})
 
 library=$build/target/android/libhorizon_android.so
 cp "$library" "$out/libhorizon_android.so"
-[ -n "${NATIVE_LIBRARY_ONLY:-}" ] || cp "$build"/target/android/starling-*-arm64-v8a.apk "$out/"
-python3 - "$build" "$work/mods" "$out" "$key" "$commit" "$profile" "$MIXINS_REV" <<'EOF'
+[ -n "${NATIVE_LIBRARY_ONLY:-}" ] || cp "$build"/target/android/starling-*-"$abi".apk "$out/"
+python3 - "$build" "$work/mods" "$out" "$key" "$commit" "$profile" "$MIXINS_REV" "$abi" <<'EOF'
 import hashlib, json, pathlib, re, sys, tomllib
-build, mods, out, key, commit, profile, mixins = sys.argv[1:]
+build, mods, out, key, commit, profile, mixins, abi = sys.argv[1:]
 sys.path.insert(0, str(pathlib.Path(build) / "packaging/android"))
 from native_mod_permissions import needs
 version = re.search(r'^VERSION_NAME = "([^"]+)"',
@@ -131,6 +157,7 @@ json.dump({
     "version": version,
     "commit": commit,
     "profile": profile,
+    "abi": abi,
     "mixins": mixins,
     "mods": listed,
     "permissions": sorted({p for m in listed for p in m.get("permissions", [])}),

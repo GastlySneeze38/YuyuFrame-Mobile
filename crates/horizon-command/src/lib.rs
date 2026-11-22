@@ -4,6 +4,7 @@
 //! usage text and the vanilla error messages. Argument types live in
 //! [`args`]; the vanilla command tree in [`vanilla`].
 #![forbid(unsafe_code)]
+pub use horizon_client_core::suggestion::{Range, Suggestion};
 pub mod args;
 pub mod block;
 pub mod codec;
@@ -22,11 +23,16 @@ pub mod tree_world;
 pub mod vanilla;
 mod vanilla_order;
 
-pub use args::{Arg, ArgType, CustomCompletionAction, Registries, modify_custom_completions};
+pub use args::{
+    Arg, ArgType, CustomArgument, CustomArgumentKind, CustomCompletionAction, CustomSuggestion,
+    Registries, modify_custom_completions,
+};
 use horizon_client_core::text::Text;
 
 /// The command id of a mod's command (`Dispatcher::with_mod_commands`).
 pub const MOD_COMMAND: &str = "mod";
+/// The command id of the client's own `/profiler` (`Dispatcher::with_profiler`).
+pub const PROFILER_COMMAND: &str = "horizon:profiler";
 
 /// A command error (CommandSyntaxException): the message and, for parse
 /// errors, the input and cursor it occurred at.
@@ -40,6 +46,9 @@ pub struct CommandError {
     /// The translation key of the exception type, when known (the
     /// exception "type" vanilla code compares against).
     pub key: String,
+    /// Not a CommandSyntaxException: `Commands.performCommand`'s catch reports
+    /// it as `command.failed` and no result callback runs.
+    pub unexpected: bool,
 }
 impl CommandError {
     pub fn new(message: Text) -> Self {
@@ -49,7 +58,15 @@ impl CommandError {
             cursor: 0,
             literal_incorrect: false,
             key: String::new(),
+            unexpected: false,
         }
+    }
+    /// An exception that is not a CommandSyntaxException, as
+    /// `Commands.performCommand` catches it.
+    pub fn unexpected() -> Self {
+        let mut e = Self::tr("command.failed", &[]);
+        e.unexpected = true;
+        e
     }
     pub fn tr(key: &str, args: &[&dyn std::fmt::Display]) -> Self {
         let mut e = Self::new(Text::tr(key, args));
@@ -63,6 +80,7 @@ impl CommandError {
             cursor: reader.cursor,
             literal_incorrect: false,
             key: String::new(),
+            unexpected: false,
         }
     }
     pub fn tr_at(key: &str, args: &[&dyn std::fmt::Display], reader: &Reader) -> Self {
@@ -141,9 +159,23 @@ impl<'a> Reader<'a> {
         &self.string[self.cursor..]
     }
     pub fn skip_whitespace(&mut self) {
-        while self.can_read() && self.peek().is_whitespace() {
+        while self.can_read() && Self::is_java_whitespace(self.peek()) {
             self.skip();
         }
+    }
+    pub fn is_java_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t'..='\r'
+                | '\u{1C}'..='\u{20}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{2006}'
+                | '\u{2008}'..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{205F}'
+                | '\u{3000}'
+        )
     }
     pub fn is_allowed_number(c: char) -> bool {
         c.is_ascii_digit() || c == '.' || c == '-'
@@ -255,7 +287,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-pub type Range = (usize, usize);
 #[derive(Clone, Debug)]
 pub enum NodeKind {
     Root,
@@ -271,6 +302,8 @@ pub struct Node {
     pub redirect: Option<usize>,
     /// Required permission level (0 everyone, 2 game masters, 4 owners).
     pub permission: u8,
+    /// The level needed to execute this node, independently of walking through it.
+    pub execution_permission: u8,
     /// A custom suggestion provider (`.suggests(...)`), used instead of the
     /// argument type's own suggestions.
     pub suggests: Option<Suggests>,
@@ -478,22 +511,6 @@ impl ParseResults {
                 },
             )),
         }
-    }
-}
-/// A completion: replace `range` of the input with `text`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Suggestion {
-    pub range: Range,
-    pub text: String,
-    pub tooltip: Option<String>,
-    /// IntegerSuggestion: sorted numerically against other integers.
-    pub int_value: Option<i32>,
-}
-impl Suggestion {
-    /// Suggestion.apply.
-    pub fn apply(&self, input: &str) -> String {
-        let (s, e) = (self.range.0.min(input.len()), self.range.1.min(input.len()));
-        format!("{}{}{}", &input[..s], self.text, &input[e..])
     }
 }
 /// SuggestionsBuilder: suggestions for the text from `start` to the cursor.
@@ -733,6 +750,13 @@ impl Suggests {
     }
 }
 
+/// The deepest node/redirect recursion `parse_nodes` accepts. `execute … run`
+/// redirects back to the root, so a crafted deeply nested command would recurse
+/// once per level and overflow the parsing thread's stack (measured at ~300 on
+/// the server thread). Far above any real command chain; vanilla likewise caps
+/// command nesting.
+const MAX_PARSE_DEPTH: usize = 128;
+
 /// The command tree (CommandDispatcher). Node 0 is the root.
 #[derive(Clone, Debug)]
 pub struct Dispatcher {
@@ -743,6 +767,8 @@ impl Default for Dispatcher {
         Self::new()
     }
 }
+/// `/profiler start`'s GPU literals: pass timings, and pass timings with their parts and counters.
+pub const PROFILER_GPU: [&str; 2] = ["gpu", "gpu_detail"];
 impl Dispatcher {
     pub fn new() -> Self {
         Self {
@@ -752,6 +778,7 @@ impl Dispatcher {
                 command: None,
                 redirect: None,
                 permission: 0,
+                execution_permission: 0,
                 suggests: None,
                 restricted: false,
             }],
@@ -787,6 +814,7 @@ impl Dispatcher {
             command: None,
             redirect: None,
             permission,
+            execution_permission: 0,
             suggests: None,
             restricted: false,
         });
@@ -822,7 +850,12 @@ impl Dispatcher {
         self.nodes[node].permission = level;
         node
     }
-    /// This tree plus the commands mods own (`docs/mods.md`), so the chat
+    /// Require a level to run this node without restricting access to its children.
+    pub fn requires_execution(&mut self, node: usize, level: u8) -> usize {
+        self.nodes[node].execution_permission = level;
+        node
+    }
+    /// This tree plus the commands mods own (`docs/modding/src/how-to/content-mods.md`), so the chat
     /// colours and completes them like the others. Every player may use one,
     /// and the text after its name goes to the mod as it was typed.
     pub fn with_mod_commands<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> Dispatcher {
@@ -834,6 +867,56 @@ impl Dispatcher {
             d.executes(args, MOD_COMMAND);
         }
         d
+    }
+    /// `/profiler` alone, which the client parses its chat line with.
+    pub fn profiler() -> Dispatcher {
+        Dispatcher::new().with_profiler()
+    }
+    /// This tree plus `/profiler`, which the client answers itself, so chat completes its real options.
+    pub fn with_profiler(&self) -> Dispatcher {
+        let mut d = self.clone();
+        if d.find("profiler").is_some() {
+            return d;
+        }
+        let command = d.literal(0, "profiler");
+        for action in ["start", "stop"] {
+            let action_node = d.literal(command, action);
+            d.executes(action_node, PROFILER_COMMAND);
+            for side in ["client", "server"] {
+                let side = d.literal(action_node, side);
+                d.executes(side, PROFILER_COMMAND);
+                if action == "start" {
+                    for gpu in PROFILER_GPU {
+                        let gpu = d.literal(side, gpu);
+                        d.executes(gpu, PROFILER_COMMAND);
+                    }
+                }
+            }
+            if action == "start" {
+                for gpu in PROFILER_GPU {
+                    let gpu = d.literal(action_node, gpu);
+                    d.executes(gpu, PROFILER_COMMAND);
+                }
+            }
+        }
+        let status = d.literal(command, "status");
+        d.executes(status, PROFILER_COMMAND);
+        for action in ["open", "share"] {
+            let action = d.literal(command, action);
+            d.executes(action, PROFILER_COMMAND);
+            let id = d.argument(action, "id", ArgType::Word);
+            d.executes(id, PROFILER_COMMAND);
+        }
+        let mark = d.literal(command, "mark");
+        let name = d.argument(mark, "name", ArgType::Greedy);
+        d.executes(name, PROFILER_COMMAND);
+        d
+    }
+    /// Whether this tree's `/profiler` is the one [`Self::with_profiler`] adds, not a server's or a mod's of the same name.
+    pub fn has_horizon_profiler(&self) -> bool {
+        self.parse("profiler status", &Registries::default())
+            .executable()
+            .is_ok_and(|(_, command)| command == PROFILER_COMMAND)
     }
     /// A root literal by name.
     pub fn find(&self, name: &str) -> Option<usize> {
@@ -911,7 +994,20 @@ impl Dispatcher {
         so_far: &Context,
         reg: &Registries,
         level: u8,
+        depth: usize,
     ) -> ParseResults {
+        if depth >= MAX_PARSE_DEPTH {
+            // A crafted command nested through `execute … run` (which redirects
+            // back to the root) recurses here per level; stop before it
+            // overflows the parsing thread's stack. The branch yields no result,
+            // so the whole command simply fails to parse.
+            return ParseResults {
+                context: so_far.clone(),
+                input: input.to_owned(),
+                cursor,
+                errors: Vec::new(),
+            };
+        }
         let mut errors = Vec::new();
         let mut potentials: Vec<ParseResults> = Vec::new();
         let original = Reader {
@@ -941,14 +1037,23 @@ impl Dispatcher {
                 errors.push((child, e));
                 continue;
             }
-            context.command = self.nodes[child].command;
+            context.command = self.nodes[child]
+                .command
+                .filter(|_| self.nodes[child].execution_permission <= level);
             let redirect = self.nodes[child].redirect;
             if reader.can_read_n(if redirect.is_none() { 2 } else { 1 }) {
                 reader.skip();
                 if let Some(target) = redirect {
                     let child_context = Context::new(target, reader.cursor);
-                    let parse =
-                        self.parse_nodes(target, input, reader.cursor, &child_context, reg, level);
+                    let parse = self.parse_nodes(
+                        target,
+                        input,
+                        reader.cursor,
+                        &child_context,
+                        reg,
+                        level,
+                        depth + 1,
+                    );
                     context.child = Some(Box::new(parse.context));
                     return ParseResults {
                         context,
@@ -964,6 +1069,7 @@ impl Dispatcher {
                     &context,
                     reg,
                     level,
+                    depth + 1,
                 ));
             } else {
                 potentials.push(ParseResults {
@@ -975,8 +1081,9 @@ impl Dispatcher {
             }
         }
         if !potentials.is_empty() {
-            // Prefer fully read input, then results without errors (stable sort).
-            potentials.sort_by_key(|p| (p.can_read(), !p.errors.is_empty()));
+            // Prefer fully read input, then results without errors. An executable
+            // result wins an otherwise complete tie; all other ties stay stable.
+            potentials.sort_by_key(|p| (p.can_read(), !p.errors.is_empty(), !p.is_valid()));
             return potentials.swap_remove(0);
         }
         ParseResults {
@@ -993,7 +1100,7 @@ impl Dispatcher {
     /// Parse starting at byte `start` (after a leading '/').
     pub fn parse_at(&self, input: &str, start: usize, reg: &Registries) -> ParseResults {
         let context = Context::new(0, start);
-        self.parse_nodes(0, input, start, &context, reg, reg.permission)
+        self.parse_nodes(0, input, start, &context, reg, reg.permission, 0)
     }
     /// CommandDispatcher.getCompletionSuggestions at `cursor`: brigadier
     /// lists every child, whatever its requirement.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+// SPDX-License-Identifier: MIT
+// Ely.by routing adapted from Vasysik/horizon-android; see THIRD_PARTY_NOTICES.md.
 //! The Microsoft account the launcher signed in, handed over in a session
 //! file (docs/microsoft-account.md), and the Minecraft services call
 //! online-mode servers need: authlib's MinecraftServicesSessionService.joinServer
@@ -20,6 +23,7 @@ pub struct AuthSession {
     pub uuid: u128,
     pub xuid: Option<String>,
     access_token: String,
+    ely: bool,
 }
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,6 +44,14 @@ pub fn parse_uuid(text: &str) -> Option<u128> {
 }
 
 impl AuthSession {
+    /// Cache identity includes the provider; tokens never form a cache key.
+    pub fn account_key(&self) -> String {
+        format!(
+            "{}-{:032x}",
+            if self.ely { "ely" } else { "msa" },
+            self.uuid
+        )
+    }
     /// For tests and harnesses.
     pub fn new(name: &str, uuid: u128, access_token: &str) -> Self {
         Self {
@@ -47,7 +59,21 @@ impl AuthSession {
             uuid,
             xuid: None,
             access_token: access_token.to_owned(),
+            ely: false,
         }
+    }
+    pub fn ely(name: &str, uuid: u128, access_token: &str) -> Self {
+        let mut session = Self::new(name, uuid, access_token);
+        session.ely = true;
+        session
+    }
+    /// An Ely.by account: its skin is on Ely.by, not on Mojang's profile.
+    pub fn is_ely(&self) -> bool {
+        self.ely
+    }
+
+    pub fn access_token(&self) -> &str {
+        &self.access_token
     }
     /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -64,7 +90,7 @@ impl AuthSession {
         let access_token = field("access_token")
             .filter(|t| !t.is_empty())
             .ok_or("the session has no access token")?;
-        if field("user_type").is_some_and(|t| t != "msa") {
+        if field("user_type").is_some_and(|t| t != "msa" && t != "ely") {
             return Err("the session is not a Microsoft account session".into());
         }
         Ok(Self {
@@ -72,6 +98,7 @@ impl AuthSession {
             uuid,
             xuid: field("xuid").map(str::to_owned),
             access_token: access_token.to_owned(),
+            ely: field("user_type") == Some("ely"),
         })
     }
     /// Read the session file the launcher wrote and delete it at once. It
@@ -100,6 +127,22 @@ impl AuthSession {
         let text = std::fs::read_to_string(path);
         let _ = std::fs::remove_file(path);
         Self::parse(&text.map_err(|e| format!("{}: {e}", path.display()))?)
+    }
+    /// The access token's expiry (its JWT `exp`) has passed, or is a minute away: the session
+    /// service would refuse it. A token that doesn't read as a JWT counts as good: the server
+    /// says.
+    pub fn expired(&self) -> bool {
+        let exp = self
+            .access_token
+            .split('.')
+            .nth(1)
+            .and_then(|p| crate::skins::base64_decode(&p.replace('-', "+").replace('_', "/")))
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
+            .and_then(|v| v.get("exp")?.as_u64());
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        exp.is_some_and(|exp| exp <= now + 60)
     }
 }
 
@@ -179,11 +222,16 @@ pub fn discovery_url() -> String {
         .unwrap_or_else(|| DEFAULT_DISCOVERY.to_owned())
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
         .build()
+}
+
+/// Whether `HORIZON_API_DISCOVERY` names another services environment.
+pub fn discovery_overridden() -> bool {
+    discovery_url() != DEFAULT_DISCOVERY
 }
 
 /// The discovery document, fetched once per game (a failure is retried next time).
@@ -218,6 +266,9 @@ pub fn endpoint(doc: &serde_json::Value, service: &str, name: &str) -> Option<St
 /// attributes call falls back to the offline properties, a failed profile call
 /// to no actions, as vanilla does. Blocks: call it off the main thread.
 pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::AccountStatus {
+    if session.ely {
+        return Default::default();
+    }
     use crate::ban_notice::{AccountStatus, parse_profile_actions, parse_properties};
     let Ok(doc) = discovery() else {
         return AccountStatus::default();
@@ -289,8 +340,12 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
 }
 
 fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
-    let doc = discovery()?;
-    let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
+    let url = if session.ely {
+        "https://authserver.ely.by/session/join".to_owned()
+    } else {
+        let doc = discovery()?;
+        endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?
+    };
     match agent()
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
@@ -411,6 +466,9 @@ pub fn parse_certificates(body: &str) -> Option<ChatKeyPair> {
 /// UserApiService.getKeyPair: the certificates endpoint, POSTed with the
 /// access token.
 pub fn fetch_chat_keys(session: &AuthSession) -> Result<ChatKeyPair, JoinError> {
+    if session.ely {
+        return Err(JoinError::Unavailable);
+    }
     let doc = discovery()?;
     let url = endpoint(&doc, "player", "getCertificates").ok_or(JoinError::Unavailable)?;
     let body = match agent()
@@ -444,11 +502,8 @@ struct ChatKeys {
     fetching: bool,
     next_try: Option<std::time::Instant>,
 }
-static CHAT_KEYS: Mutex<ChatKeys> = Mutex::new(ChatKeys {
-    current: None,
-    fetching: false,
-    next_try: None,
-});
+static CHAT_KEYS: std::sync::LazyLock<Mutex<std::collections::HashMap<u128, ChatKeys>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// prepareKeyPair (`now`: on a join) or, from a tick, shouldRefreshKeyPair
 /// then prepareKeyPair: start fetching when there is no key pair or it is
@@ -457,7 +512,14 @@ pub fn prepare_chat_keys(now: bool) {
     let Some(session) = current() else {
         return;
     };
-    let mut keys = CHAT_KEYS.lock().unwrap();
+    prepare_chat_keys_for(session, now);
+}
+
+/// Prepare keys for this player, independently of the other local accounts.
+pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
+    let uuid = session.uuid;
+    let mut accounts = CHAT_KEYS.lock().unwrap();
+    let keys = accounts.entry(uuid).or_default();
     let instant = std::time::Instant::now();
     if keys.fetching || !now && keys.next_try.is_some_and(|t| instant < t) {
         return;
@@ -471,12 +533,13 @@ pub fn prepare_chat_keys(now: bool) {
         return;
     }
     keys.fetching = true;
-    drop(keys);
+    drop(accounts);
     let spawned = std::thread::Builder::new()
         .name("Profile key fetch".into())
         .spawn(move || {
             let result = fetch_chat_keys(&session);
-            let mut keys = CHAT_KEYS.lock().unwrap();
+            let mut accounts = CHAT_KEYS.lock().unwrap();
+            let keys = accounts.entry(uuid).or_default();
             keys.fetching = false;
             match result {
                 Ok(pair) => keys.current = Some(Arc::new(pair)),
@@ -484,19 +547,24 @@ pub fn prepare_chat_keys(now: bool) {
             }
         });
     if spawned.is_err() {
-        CHAT_KEYS.lock().unwrap().fetching = false;
+        CHAT_KEYS.lock().unwrap().entry(uuid).or_default().fetching = false;
     }
 }
 
 /// The chat key pair fetched so far, unless it has expired.
 pub fn chat_keys() -> Option<Arc<ChatKeyPair>> {
-    let now = now_millis();
+    chat_keys_for(current()?.uuid)
+}
+
+/// This account's key pair; another local player's keys can never be returned.
+pub fn chat_keys_for(uuid: u128) -> Option<Arc<ChatKeyPair>> {
     CHAT_KEYS
         .lock()
         .unwrap()
+        .get(&uuid)?
         .current
         .clone()
-        .filter(|k| !k.public.has_expired(now))
+        .filter(|k| !k.public.has_expired(now_millis()))
 }
 
 const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
@@ -505,6 +573,9 @@ const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/pro
 /// Single-player and integrated servers often send no `textures` property, or
 /// one without the equipped cape; the client asks the profile endpoint once.
 pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    if session.ely {
+        return None;
+    }
     let response = agent()
         .get(MINECRAFT_PROFILE)
         .set("Authorization", &format!("Bearer {}", session.access_token))
@@ -638,6 +709,42 @@ mod tests {
         ] {
             assert_eq!(joined(&[Err(refused.clone())]), (Err(refused), 1));
         }
+    }
+
+    /// base64url without padding, as a JWT's parts are.
+    fn base64url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n =
+                chunk.iter().fold(0u32, |n, &b| n << 8 | u32::from(b)) << (8 * (3 - chunk.len()));
+            for k in 0..=chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * k) & 63) as usize]));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_token_past_its_exp_is_expired() {
+        // header.payload.signature, the payload base64url without padding.
+        let token = |exp: u64| {
+            let json = format!(r#"{{"exp":{exp}}}"#);
+            let payload = base64url(json.as_bytes());
+            AuthSession::new("Ann", UUID, &format!("e30.{payload}.sig"))
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(token(now - 10).expired());
+        assert!(
+            token(now + 30).expired(),
+            "a minute from its end: as good as gone"
+        );
+        assert!(!token(now + 3600).expired());
+        assert!(!AuthSession::new("Ann", UUID, "not-a-jwt").expired());
     }
 
     fn write(dir: &Path, text: &str, mode: u32) -> std::path::PathBuf {
@@ -804,6 +911,38 @@ mod tests {
     }
 
     #[test]
+    fn local_accounts_use_their_own_chat_keys() {
+        let pair = |signature: &[u8]| {
+            let mut keys = parse_certificates(&certificates(PRIVATE_B64, PUBLIC_B64)).unwrap();
+            keys.public.expires_at = i64::MAX;
+            keys.refreshed_after = i64::MAX;
+            keys.public.signature = signature.to_vec();
+            Arc::new(keys)
+        };
+        let ann = pair(b"ann");
+        let bea = pair(b"bea");
+        {
+            let mut accounts = CHAT_KEYS.lock().unwrap();
+            for (uuid, keys) in [(101, ann.clone()), (102, bea.clone())] {
+                accounts.insert(
+                    uuid,
+                    ChatKeys {
+                        current: Some(keys),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        prepare_chat_keys_for(Arc::new(AuthSession::new("Ann", 101, "unused")), true);
+        assert!(Arc::ptr_eq(&chat_keys_for(101).unwrap(), &ann));
+        assert!(Arc::ptr_eq(&chat_keys_for(102).unwrap(), &bea));
+        assert!(chat_keys_for(103).is_none());
+        CHAT_KEYS.lock().unwrap().remove(&101);
+        CHAT_KEYS.lock().unwrap().remove(&102);
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn certificates_response() {
         let pair = parse_certificates(&certificates(PRIVATE_B64, PUBLIC_B64)).unwrap();
         assert_eq!(
@@ -853,5 +992,23 @@ mod tests {
             Some("https://s/join")
         );
         assert_eq!(endpoint(&doc, "session", "verify"), None);
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    #[test]
+    fn provider_identity_is_distinct_and_ely_session_keeps_its_own_join_identity() {
+        let ms = AuthSession::new("Player", 1, "microsoft-private");
+        let ely=AuthSession::parse(r#"{"name":"Player","uuid":"00000000000000000000000000000001","access_token":"ely-private","user_type":"ely"}"#).unwrap();
+        assert_ne!(ms.account_key(), ely.account_key());
+        assert!(!format!("{ely:?}").contains("ely-private"));
+        let join: serde_json::Value =
+            serde_json::from_str(&join_request(&ely, "server-hash")).unwrap();
+        assert_eq!(join["accessToken"], "ely-private");
+        assert_eq!(join["selectedProfile"], "00000000000000000000000000000001");
+        assert_eq!(join["serverId"], "server-hash");
+        assert!(join.get("xuid").is_none());
     }
 }

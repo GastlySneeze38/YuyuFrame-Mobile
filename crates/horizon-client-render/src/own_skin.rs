@@ -2,7 +2,11 @@
 //! the one chosen and its model, kept in horizon-player.txt (`offline_name`), and the image read
 //! as vanilla reads a downloaded skin (`SkinTextureDownloader.processLegacySkin`: 64x64, or a
 //! legacy 64x32 laid out anew). Only this game draws it: other players see the skin the server
-//! sends for the profile, as vanilla's protocol has it.
+//! sends for the profile, as vanilla's protocol has it, unless a Microsoft account uploads it to
+//! its profile (`upload_png`).
+//!
+//! Each of Starling's profiles (Microsoft, Ely.by, offline) keeps its own choice, as Horizon
+//! Android's wardrobe keeps one per account (`SkinChoice::for_profile`).
 use crate::offline_name;
 use std::io::Read;
 use std::path::Path;
@@ -11,6 +15,11 @@ use std::path::Path;
 pub const DIR: &str = "skins";
 const SKIN: &str = "skin";
 const MODEL: &str = "model";
+/// Each profile's choice, beside options.txt: `{"<profile key>": {"skin": "a.png", "model":
+/// "slim"}}`, `skin` null for the profile's own (its account's, else the default one).
+pub const PROFILES: &str = "horizon-skins.json";
+/// The largest skin file read for an upload, as Horizon Android's import takes.
+const MAX_UPLOAD: u64 = 1024 * 1024;
 
 /// The chosen skin: a file of `skins/` (None: the default skin) and its model.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -34,6 +43,153 @@ impl SkinChoice {
         let model = if self.slim { "slim" } else { "classic" };
         offline_name::set_values(dir, &[(SKIN, self.file.as_deref()), (MODEL, Some(model))])
     }
+
+    /// The choice of the profile `key` (the accounts' profile key), kept in [`PROFILES`]; for a
+    /// profile that made none yet, or with no profiles, the one kept beside the name
+    /// ([`Self::load`]), which every profile wore before they had their own.
+    pub fn for_profile(dir: &Path, key: Option<&str>) -> Self {
+        Self::saved_for_profile(dir, key).unwrap_or_else(|| Self::load(dir))
+    }
+
+    pub fn saved_for_profile(dir: &Path, key: Option<&str>) -> Option<Self> {
+        profile_choice(&read_profiles(dir), key?)
+    }
+
+    pub fn for_game(dir: &Path, key: Option<&str>) -> Self {
+        read_profiles(dir)
+            .get(key.unwrap_or(""))
+            .and_then(|entry| entry.get("wardrobe"))
+            .and_then(read_choice)
+            .unwrap_or_else(|| Self::for_profile(dir, key))
+    }
+
+    pub fn save_for_game(&self, dir: &Path, key: Option<&str>) -> std::io::Result<()> {
+        let mut all = read_profiles(dir);
+        let model = if self.slim { "slim" } else { "classic" };
+        profile_entry(&mut all, key.unwrap_or("")).insert(
+            "wardrobe".into(),
+            serde_json::json!({ "skin": self.file, "model": model }),
+        );
+        write_profiles(dir, &all)
+    }
+
+    /// Keep the choice for the profile `key`; with none, beside the name ([`Self::save`]).
+    pub fn save_for_profile(&self, dir: &Path, key: Option<&str>) -> std::io::Result<()> {
+        let Some(key) = key else {
+            return self.save(dir);
+        };
+        let mut all = read_profiles(dir);
+        let model = if self.slim { "slim" } else { "classic" };
+        let entry = profile_entry(&mut all, key);
+        entry.insert(SKIN.into(), serde_json::json!(self.file));
+        entry.insert(MODEL.into(), serde_json::json!(model));
+        write_profiles(dir, &all)
+    }
+}
+
+/// The local override of the account's cape.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapeChoice {
+    #[default]
+    Account,
+    Hidden,
+    Local(String),
+}
+
+impl CapeChoice {
+    pub fn load(dir: &Path, key: Option<&str>) -> Option<Self> {
+        let all = read_profiles(dir);
+        serde_json::from_value(all.get(key.unwrap_or(""))?.get("cape")?.clone()).ok()
+    }
+
+    pub fn save(&self, dir: &Path, key: Option<&str>) -> std::io::Result<()> {
+        let mut all = read_profiles(dir);
+        profile_entry(&mut all, key.unwrap_or("")).insert(
+            "cape".into(),
+            serde_json::to_value(self).map_err(std::io::Error::other)?,
+        );
+        write_profiles(dir, &all)
+    }
+}
+
+fn profile_entry<'a>(
+    all: &'a mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let entry = all.entry(key).or_insert_with(|| serde_json::json!({}));
+    if !entry.is_object() {
+        *entry = serde_json::json!({});
+    }
+    entry.as_object_mut().unwrap()
+}
+
+fn write_profiles(
+    dir: &Path,
+    all: &serde_json::Map<String, serde_json::Value>,
+) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(all).map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{PROFILES}.part"));
+    std::fs::write(&part, text + "\n")?;
+    std::fs::rename(part, dir.join(PROFILES))
+}
+
+/// Where the playing profile's skin can go besides this game (Skin Customization's account rows).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Cloud {
+    /// An offline profile, or none: the skin stays in this game.
+    #[default]
+    Local,
+    /// A Microsoft account: the chosen skin can go to its profile; how the last upload went.
+    Microsoft(Upload),
+    /// An Ely.by account: its skin is changed on ely.by, which takes no uploads from launchers.
+    Ely,
+}
+
+/// A skin's upload to a Microsoft account's profile.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Upload {
+    #[default]
+    None,
+    Sending,
+    Sent,
+    /// Why not: a lang key, or the reason itself.
+    Failed(String),
+}
+
+/// [`PROFILES`] as it is: empty when missing, too large or not an object of the profiles.
+fn read_profiles(dir: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let mut text = String::new();
+    let read = std::fs::File::open(dir.join(PROFILES))
+        .and_then(|file| file.take(256 * 1024).read_to_string(&mut text));
+    match read.ok().and_then(|_| serde_json::from_str(&text).ok()) {
+        Some(serde_json::Value::Object(all)) => all,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The profile `key`'s choice in [`PROFILES`], if it made one.
+fn profile_choice(
+    all: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<SkinChoice> {
+    read_choice(all.get(key)?)
+}
+
+fn read_choice(entry: &serde_json::Value) -> Option<SkinChoice> {
+    let entry = entry.as_object()?;
+    if !entry.contains_key(SKIN) {
+        return None;
+    }
+    Some(SkinChoice {
+        file: entry
+            .get(SKIN)
+            .and_then(serde_json::Value::as_str)
+            .filter(|f| is_file_name(f))
+            .map(str::to_owned),
+        slim: entry.get(MODEL).and_then(serde_json::Value::as_str) == Some("slim"),
+    })
 }
 
 /// What the page calls a skin file: its name without `.png`.
@@ -96,12 +252,30 @@ pub fn list(skins: &Path) -> Vec<String> {
     files
 }
 
-/// The skin after `current` in the page's cycle: the default (None), then each of `files`.
-pub fn next(files: &[String], current: Option<&str>) -> Option<String> {
-    let after = current
-        .and_then(|c| files.iter().position(|f| f == c))
-        .map_or(0, |i| i + 1);
-    files.get(after).cloned()
+/// The face and hat pixels of a skin, packed in the HUD's color format.
+pub(super) type Thumbnail = [[u32; 64]; 2];
+
+pub(super) fn thumbnail(skins: &Path, file: &str) -> Option<Thumbnail> {
+    if !is_file_name(file) {
+        return None;
+    }
+    let mut png = Vec::new();
+    std::fs::File::open(skins.join(file))
+        .ok()?
+        .take(MAX_UPLOAD + 1)
+        .read_to_end(&mut png)
+        .ok()?;
+    if png.len() as u64 > MAX_UPLOAD {
+        return None;
+    }
+    let skin = decode(&png).ok()?;
+    Some([8, 40].map(|left| {
+        std::array::from_fn(|i| {
+            let at = ((8 + i / 8) * 64 + left + i % 8) * 4;
+            let [r, g, b, a] = skin[at..at + 4].try_into().unwrap();
+            crate::hud::rgba(r, g, b, a)
+        })
+    }))
 }
 
 /// A skin PNG as the game draws it, 64x64 RGBA; why not, for a file that is no skin.
@@ -132,6 +306,34 @@ pub fn load(skins: &Path, file: &str) -> Result<Vec<u8>, String> {
     decode(&bytes).map_err(|e| format!("{file} is not a skin: {e}"))
 }
 
+/// The file `file` of `skins` as an account's service takes a skin: checked as [`load`] checks
+/// it, then written anew at its own size (64x64, or a legacy 64x32 kept so, which the services
+/// take as it is), so that no text or other chunk of the original file leaves the device.
+pub fn upload_png(skins: &Path, file: &str) -> Result<Vec<u8>, String> {
+    if !is_file_name(file) {
+        return Err(format!("{file} is not a file of the skins folder"));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(skins.join(file))
+        .and_then(|f| f.take(MAX_UPLOAD + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("could not read {file}: {e}"))?;
+    if bytes.len() as u64 > MAX_UPLOAD {
+        return Err(format!("{file} is larger than 1 MiB"));
+    }
+    decode(&bytes).map_err(|e| format!("{file} is not a skin: {e}"))?;
+    let (width, height, rgba) =
+        crate::hud::decode_bytes(&bytes).map_err(|e| format!("{file} could not be read ({e})"))?;
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(&rgba))
+        .map_err(|e| format!("{file} could not be written anew ({e})"))?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +356,38 @@ mod tests {
         writer.write_image_data(rgba).unwrap();
         writer.finish().unwrap();
         out
+    }
+
+    #[test]
+    fn choosing_a_cape_keeps_the_profiles_skin_and_legacy_fallback() {
+        let dir = scratch("cape");
+        let legacy = SkinChoice {
+            file: Some("legacy.png".into()),
+            slim: false,
+        };
+        legacy.save(&dir).unwrap();
+        CapeChoice::Hidden.save(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), legacy);
+        assert_eq!(CapeChoice::load(&dir, Some("profile-b")), None);
+
+        let chosen = SkinChoice {
+            file: Some("my-skin.png".into()),
+            slim: true,
+        };
+        chosen.save_for_profile(&dir, Some("profile-a")).unwrap();
+        assert_eq!(
+            CapeChoice::load(&dir, Some("profile-a")),
+            Some(CapeChoice::Hidden)
+        );
+        let cape = CapeChoice::Local("my-cape".into());
+        cape.save(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), chosen);
+        assert_eq!(CapeChoice::load(&dir, Some("profile-a")), Some(cape));
+        legacy.save_for_game(&dir, Some("profile-a")).unwrap();
+        chosen.save_for_profile(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_game(&dir, Some("profile-a")), legacy);
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), chosen);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn pixel(rgba: &[u8], x: usize, y: usize) -> [u8; 4] {
@@ -215,11 +449,84 @@ mod tests {
         assert_eq!(shown_name("Old.PNG"), "Old");
         assert_eq!(shown_name("é"), "é");
         // The cycle: the default, each skin, the default again.
-        assert_eq!(next(&files, None).as_deref(), Some("Old.PNG"));
-        assert_eq!(next(&files, Some("Old.PNG")).as_deref(), Some("steve.png"));
-        assert_eq!(next(&files, Some("steve.png")), None);
-        assert_eq!(next(&files, Some("gone.png")).as_deref(), Some("Old.PNG"));
-        assert_eq!(next(&[], None), None);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn each_profile_keeps_its_own_choice_and_the_old_one_stays_the_fallback() {
+        let d = scratch("profiles");
+        let before = SkinChoice {
+            file: Some("old.png".into()),
+            slim: false,
+        };
+        before.save(&d).unwrap();
+        // A profile that chose nothing yet wears the choice made before profiles had their own.
+        assert_eq!(SkinChoice::for_profile(&d, Some("offline:Alex")), before);
+        let alex = SkinChoice {
+            file: Some("alex.png".into()),
+            slim: true,
+        };
+        alex.save_for_profile(&d, Some("offline:Alex")).unwrap();
+        // The account's own skin, chosen for the Microsoft profile, is a choice of its own too.
+        let account = SkinChoice::default();
+        account
+            .save_for_profile(&d, Some("069a79f444e94726a5befca90e38aaf5"))
+            .unwrap();
+        assert_eq!(SkinChoice::for_profile(&d, Some("offline:Alex")), alex);
+        assert_eq!(
+            SkinChoice::for_profile(&d, Some("069a79f444e94726a5befca90e38aaf5")),
+            account
+        );
+        assert_eq!(SkinChoice::for_profile(&d, Some("ely069a")), before);
+        // No profiles: the choice beside the name, untouched by the profiles'.
+        assert_eq!(SkinChoice::for_profile(&d, None), before);
+        let none = SkinChoice {
+            file: Some("plain.png".into()),
+            slim: true,
+        };
+        none.save_for_profile(&d, None).unwrap();
+        assert_eq!(SkinChoice::load(&d), none);
+        assert_eq!(SkinChoice::for_profile(&d, Some("offline:Alex")), alex);
+        // A path is no file of the folder; a damaged file is no choice at all.
+        fs::write(
+            d.join(PROFILES),
+            r#"{"offline:Alex": {"skin": "../x.png", "model": "slim"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            SkinChoice::for_profile(&d, Some("offline:Alex")),
+            SkinChoice {
+                file: None,
+                slim: true
+            }
+        );
+        fs::write(d.join(PROFILES), "not json").unwrap();
+        assert_eq!(SkinChoice::for_profile(&d, Some("offline:Alex")), none);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_upload_is_the_skin_written_anew_at_its_own_size() {
+        let d = scratch("upload");
+        let mut rgba = vec![0u8; 64 * 32 * 4];
+        rgba[..4].copy_from_slice(&[10, 20, 30, 255]);
+        let mut legacy = png_of(64, 32, &rgba);
+        // A text chunk the original carries before its end: the upload leaves it behind.
+        let end = legacy.len() - 12;
+        let text = b"tEXtAuthor\0someone";
+        let mut chunk = (text.len() as u32 - 4).to_be_bytes().to_vec();
+        chunk.extend_from_slice(text);
+        chunk.extend_from_slice(&[0, 0, 0, 0]);
+        legacy.splice(end..end, chunk);
+        fs::write(d.join("old.png"), &legacy).unwrap();
+        let sent = upload_png(&d, "old.png").unwrap();
+        let (width, height, pixels) = crate::hud::decode_bytes(&sent).unwrap();
+        assert_eq!((width, height), (64, 32));
+        assert_eq!(pixels, rgba);
+        assert!(!sent.windows(6).any(|w| w == b"Author"));
+        assert!(upload_png(&d, "../old.png").is_err());
+        fs::write(d.join("big.png"), png_of(128, 128, &[0; 128 * 128 * 4])).unwrap();
+        assert!(upload_png(&d, "big.png").is_err());
         let _ = fs::remove_dir_all(&d);
     }
 

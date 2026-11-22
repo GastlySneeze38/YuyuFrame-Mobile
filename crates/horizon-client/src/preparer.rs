@@ -5,9 +5,9 @@
 //! game's resources folder; the runtime goes once it is done.
 #[path = "preparer_install.rs"]
 mod install;
-use starling_account::java::JRE25_ANDROID_ARM64 as RUNTIME;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Instant;
 
 /// Where the preparing is.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -15,7 +15,7 @@ pub enum Stage {
     #[default]
     Idle,
     /// Fetching the Java runtime: bytes so far, and in all.
-    Java(u64, u64),
+    Java(u64, u64, Instant),
     /// Unpacking it.
     Unpacking,
     /// horizon-prepare at work: its last line.
@@ -62,6 +62,11 @@ fn home() -> PathBuf {
 /// Prepare the fetched files into `resources` (the folder the game reads), on a thread of its
 /// own; `stage` follows it.
 pub fn start(resources: PathBuf) {
+    let Some(runtime) = starling_account::java::android_runtime(std::env::consts::ARCH) else {
+        *shared() = Stage::Failed("On 32-bit x86, import prepared resources as a .starling file. An Android x86 Java 25 runtime is not available.".into());
+        return;
+    };
+    let started = Instant::now();
     {
         let mut stage = shared();
         if matches!(
@@ -70,13 +75,12 @@ pub fn start(resources: PathBuf) {
         ) {
             return;
         }
-        *stage = Stage::Java(0, RUNTIME.size);
+        *stage = Stage::Java(0, runtime.size, started);
     }
     let spawned = std::thread::Builder::new()
         .name("preparer".into())
         .spawn(move || {
-            let started = std::time::Instant::now();
-            let result = run(&resources);
+            let result = run(&resources, started);
             *shared() = match result {
                 Ok(()) => {
                     log::info!(
@@ -96,26 +100,31 @@ pub fn start(resources: PathBuf) {
     }
 }
 
-fn run(resources: &Path) -> Result<(), String> {
+fn run(resources: &Path, started: Instant) -> Result<(), String> {
+    let runtime = starling_account::java::android_runtime(std::env::consts::ARCH)
+        .ok_or("No Java runtime is available for this architecture.")?;
     let server_jar = crate::accounts::server_jar()
         .ok_or("The game files are not all there: download them again.")?;
     let library = crate::platform::library_dir().ok_or("Starling cannot find its own files.")?;
     let home = home();
+    let kit = home.join("kit");
+    unpack_kit(&kit)?;
+    if !horizon_prepare::exporters::available(&kit) {
+        return Err("The app's exporter bundle is missing, outdated or damaged. Install the current APK again.".into());
+    }
     let jre = home.join("jre25");
     starling_account::java::install(
-        &RUNTIME,
+        runtime,
         &jre,
         &|done, total| {
             *shared() = if done >= total {
                 Stage::Unpacking
             } else {
-                Stage::Java(done, total)
+                Stage::Java(done, total, started)
             };
         },
         &|| false,
     )?;
-    let kit = home.join("kit");
-    unpack_kit(&kit)?;
     let temp = home.join("tmp");
     std::fs::create_dir_all(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
     let env = |path: &Path| path.display().to_string();
@@ -140,6 +149,9 @@ fn run(resources: &Path) -> Result<(), String> {
             ),
         ],
     });
+    if let Some(limit) = horizon_prepare::java::max_heap_mib() {
+        log::info!("Horizon: 32-bit preparation Java heap limit: {limit} MiB");
+    }
     *shared() = Stage::Preparing("Starting Java".into());
     let made = horizon_prepare::prepare(
         &horizon_prepare::Options {
@@ -169,6 +181,12 @@ fn run(resources: &Path) -> Result<(), String> {
     install::activate(&made, resources)?;
     // Bedrock's touch buttons, from Mojang too, so the first game already has them.
     crate::bedrock_touch::fetch_logged(resources);
+    // Preparation replaces the resource directory. Fetch the original control
+    // overlay afterwards so the first game, not just a restart, receives it.
+    crate::android_control_assets::fetch(resources, |done, total| {
+        *shared() = Stage::Preparing(format!("Control textures: {done}/{total}"));
+    })
+    .map_err(|e| format!("Control textures: {e}"))?;
     // Everything the game reads is in the resources now: the runtime and the work files go.
     for done in [&jre, &kit.join(".local"), &temp] {
         let _ = std::fs::remove_dir_all(done);
@@ -201,6 +219,25 @@ pub fn complete_sounds(resources: &Path) {
             resources.display()
         ),
         Err(e) => log::warn!("Horizon: the game's sounds were not added: {e}"),
+    }
+}
+
+/// Once the game has loaded the prepared `resources`, the official files they were prepared
+/// from go (accounts::drop_files), on a thread of their own: thousands of files to delete. Not
+/// while the resources lack their sounds, which `complete_sounds` still takes from them.
+pub fn drop_downloads(resources: &Path) {
+    let root = crate::accounts::files_root();
+    if !crate::platform::registered()
+        || !resources.join("assets/minecraft/sounds.json").is_file()
+        || !(root.exists() || root.with_file_name("minecraft.dropped").exists())
+    {
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
+        .name("drop-downloads".into())
+        .spawn(crate::accounts::drop_files)
+    {
+        log::warn!("Horizon: the fetched game files stay: {e}");
     }
 }
 
@@ -281,6 +318,12 @@ pub fn put_shader_pack(game_folder: &Path) {
     }
 }
 
+/// The std the wasm mods linked against, which earlier versions put in the app's own files: gone
+/// with the wasm mods (Starling runs none since 2026-11-20).
+pub fn remove_wasm_std() {
+    let _ = std::fs::remove_file(crate::logging::private_home().join("horizon-wasm-std.wasm"));
+}
+
 /// CRC-32 (IEEE), to tell one skin from the next.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -301,6 +344,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 fn unpack_kit(dir: &Path) -> Result<(), String> {
     let bytes = crate::platform::asset("prepare-kit.zip")
         .ok_or("Starling's preparer is missing from the app: install it again.")?;
+    install::reset_kit_sources(dir)?;
     unpack(&bytes, dir)
 }
 

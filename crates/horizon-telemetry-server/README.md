@@ -13,7 +13,7 @@ It runs at **https://telemetry.playhorizon.dev** (`DEFAULT_ENDPOINT` in `crates/
 |---|---|
 | `POST /v1/batch` | A zstd batch (`Content-Encoding: zstd`, at most 256 KiB, 1 MiB inflated, 64 items). Returns 204. Returns 400 for a bad batch, 413 for one too large, 415 if it is not zstd, 429 when over a limit. |
 | `DELETE /v1/installs/<id>` | Deletes everything that install sent. Its share of the daily totals is rebuilt at once. |
-| `GET /v1/aggregate?days=30` | The totals the website reads. Cached 10 minutes, with `Access-Control-Allow-Origin` set to the website. |
+| `GET /v1/aggregate?days=30` | The totals the website reads. Cached 10 minutes, with `Access-Control-Allow-Origin` set to the website. 429 over the address's read limit; 503 when building an uncached window would pass the hour's build budget; 400 for a `days` outside `HORIZON_TELEMETRY_AGGREGATE_DAYS` when that is set. |
 | `GET /v1/benchmarks/summary` | Players' benchmark uploads grouped by GPU, CPU, render distance and game, for the website's Benchmarks page (below). Cached 10 minutes, same `Access-Control-Allow-Origin`. |
 | `GET /v1/export/benchmarks?after=<id>&limit=100` | Owner-only: the raw benchmark reports, oldest first, `{"reports": [{"id", "day", "version", "report"}], "next": <id>\|null}` (pass `next` as `after`). No install ID. Needs `Authorization: Bearer <TELEMETRY_EXPORT_TOKEN>`: 401 without it, 404 while the server has no token, gzip if the client accepts it, never cached. |
 | `GET /v1/export/hardware?days=30&offset=0&limit=200` | Owner-only, same token: the play sessions of the last `days` per machine (CPU, threads, physical cores, RAM, GPU, drive, OS…), busiest first, with installs, sessions, hours, mean p50/p99 and the frame buckets. No minimum number of installs; no install ID. `next_offset` pages. |
@@ -23,6 +23,7 @@ It runs at **https://telemetry.playhorizon.dev** (`DEFAULT_ENDPOINT` in `crates/
 | `POST /hub/vote` | `{"item": "<roadmap id>", "voter": "<the browser's random id>", "up": true}`: a 👍 on a roadmap item, one per voter; `"up": false` takes it back. Returns `{"item", "votes"}`. 400 for a bad id, 429 over the address's limit. |
 | `GET /hub/votes` | `{"votes": {"<item>": n}}`. Made again at most every minute. |
 | `POST /hub/report` | A bug report from the hub's form: `{"title", "did", "happened", "expected", "version"?, "system", "name"?}`. Opens a GitHub issue at once (labels `bug` and `from-website`, the `#horizon-bugs` template, "Reported on playhorizon.dev") and returns 201 `{"id", "issue": "<url>"}`. If GitHub fails: 202 `{"id", "issue": null}`, and the upkeep tries again for a week. The same report twice in a day returns the first one's issue. 400 for an empty or too long field, 429 over the address's limit, 503 past the day's cap or without `GITHUB_TOKEN`. |
+| `POST /v1/report` | A bug or performance report from the game: the fields in docs/telemetry.md "Bug reports from the game". Opens a GitHub issue in the game's template (labels `from-game`, and `bug` with the player's area or `perf`) and answers as `POST /hub/report` does. Its own daily cap; the same per-address limit as the hub's form. |
 | `GET /healthz` | `ok` |
 
 The hub's posts take JSON from the website (`OPTIONS` preflights answer with its origin). A form's hidden `website` field filled in (a bot) gets 202 and is dropped.
@@ -80,7 +81,7 @@ All are environment variables:
 - `HORIZON_TELEMETRY_MIN_INSTALL_DAYS` (5)
 - `HORIZON_TELEMETRY_REQUESTS_PER_HOUR` per address (60, bursts of 6)
 - `HORIZON_TELEMETRY_ITEMS_PER_DAY` per install (100)
-- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy (the client's address is then the proxy's `X-Real-IP`, else the last `X-Forwarded-For` entry; it is used only for the rate limits, in memory, and never stored or logged)
+- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy, with `HORIZON_TELEMETRY_CLIENT_IP_HEADER` naming the one header the proxy overwrites with the client's address (`x-real-ip` on Railway; its last comma-separated entry is used). No other header is read. The address is used only for the rate limits, in memory, and never stored or logged. `TRUST_PROXY=1` without the header would count the TCP peer, which behind a proxy is the proxy, so every client would share one bucket: the server refuses to start instead.
 - `HORIZON_TELEMETRY_ALLOW_ORIGIN` (`https://playhorizon.dev`)
 - `HORIZON_TELEMETRY_LIVE_PER_HOUR` per address, pings and reads (600, bursts of 60: ten players behind one address)
 - `HORIZON_TELEMETRY_LIVE_WINDOW_SECONDS` (120)
@@ -90,9 +91,13 @@ All are environment variables:
 - `HORIZON_TELEMETRY_HUB_PER_HOUR` votes and vote reads per address (600, bursts of 60: a page load is one read, and several players can share an address)
 - `HORIZON_TELEMETRY_HUB_POSTS_PER_HOUR` bug reports per address (20, bursts of 2)
 - `HORIZON_TELEMETRY_HUB_REPORTS_PER_DAY` from everyone (30): each opens an issue
+- `HORIZON_TELEMETRY_GAME_REPORTS_PER_DAY` reports from the game, from everyone (20): each opens an issue
 - `HORIZON_TELEMETRY_HUB_KEEP_DAYS` (90)
 - `HORIZON_TELEMETRY_GITHUB_TOKEN`: a fine-grained token with Issues read and write on the repository only (unset: `POST /hub/report` answers 503 and the form points to GitHub and Discord)
 - `HORIZON_TELEMETRY_GITHUB_REPO` (`horizon-rust/horizon`)
+- `HORIZON_TELEMETRY_READS_PER_HOUR` per address, for `/v1/aggregate` and `/v1/benchmarks/summary` (600, bursts of 60)
+- `HORIZON_TELEMETRY_AGGREGATE_BUILDS_PER_HOUR` from everyone (600, bursts of 60): totals built from the database on a cache miss; past it a miss answers 503
+- `HORIZON_TELEMETRY_AGGREGATE_DAYS`, e.g. `7,30,90,366`: the only `days` `/v1/aggregate` answers (others get 400), so the cache holds a handful of windows. Unset: any value from 1 to 366. List every value the website asks for before setting it.
 - `TELEMETRY_EXPORT_TOKEN` (or `HORIZON_TELEMETRY_EXPORT_TOKEN`): the bearer token of `/v1/export/*` (unset: those answer 404). A long random secret; requests with a wrong one count against the address's rate limit.
 
 ## Hosting
@@ -102,7 +107,7 @@ All are environment variables:
 On Railway it is a service of the same project as the website:
 
 - Source: this repository, root directory `/` (the Dockerfile needs the shared crate), config file `/crates/horizon-telemetry-server/railway.json` (Dockerfile build, health check `/healthz`, one replica in `europe-west4`, Amsterdam: one SQLite file can't be shared).
-- A volume mounted at `/data`. The Dockerfile already sets `HORIZON_TELEMETRY_DB=/data/telemetry.sqlite3` and `HORIZON_TELEMETRY_TRUST_PROXY=1`; Railway sets `PORT`.
+- A volume mounted at `/data`. The Dockerfile already sets `HORIZON_TELEMETRY_DB=/data/telemetry.sqlite3`, `HORIZON_TELEMETRY_TRUST_PROXY=1` and `HORIZON_TELEMETRY_CLIENT_IP_HEADER=x-real-ip`; Railway sets `PORT`.
 - The custom domain `telemetry.playhorizon.dev`: a `CNAME` at Porkbun to the target Railway gives.
 
 Check it with `curl https://telemetry.playhorizon.dev/healthz`.

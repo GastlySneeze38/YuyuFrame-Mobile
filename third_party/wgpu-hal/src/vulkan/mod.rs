@@ -29,6 +29,7 @@ mod command;
 pub mod conv;
 mod descriptor;
 mod device;
+pub mod disk_cache;
 mod drm;
 mod instance;
 mod relaxed;
@@ -37,6 +38,8 @@ mod semaphore_list;
 mod swapchain;
 
 pub use adapter::PhysicalDeviceFeatures;
+// Starling's custom GPU driver (Android): the setter lives in `instance`.
+pub use instance::set_custom_get_instance_proc_addr;
 
 use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};
@@ -534,6 +537,10 @@ struct DeviceShared {
 
     empty_descriptor_set_layout: vk::DescriptorSetLayout,
 
+    /// Horizon: the cache a pipeline made without one of its own goes through, kept on disk
+    /// between runs ([`disk_cache`]); null when the application named no file for it.
+    fallback_pipeline_cache: vk::PipelineCache,
+
     // The `drop_guard` field must be the last field of this struct so it is dropped last.
     // Do not add new fields after it.
     drop_guard: Option<crate::DropGuard>,
@@ -548,6 +555,12 @@ impl Drop for DeviceShared {
             self.raw
                 .destroy_descriptor_set_layout(self.empty_descriptor_set_layout, None)
         };
+        if self.fallback_pipeline_cache != vk::PipelineCache::null() {
+            unsafe {
+                self.raw
+                    .destroy_pipeline_cache(self.fallback_pipeline_cache, None)
+            };
+        }
         if self.drop_guard.is_none() {
             unsafe { self.raw.destroy_device(None) };
         }

@@ -8,8 +8,8 @@ use sha1::{Digest, Sha1};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// What `research-lock.json` pins about the game files.
 #[derive(Clone, Debug)]
@@ -77,6 +77,10 @@ pub struct Progress {
     pub files_total: usize,
     pub bytes: u64,
     pub bytes_total: u64,
+    /// Verified bytes fetched in this attempt. Cached files count only toward `bytes`.
+    pub downloaded_bytes: u64,
+    pub transfer_started: Option<Instant>,
+    pub last_transfer: Option<Instant>,
 }
 
 /// Where the fetched files are.
@@ -152,6 +156,12 @@ const TRIES: u32 = 5;
 /// The wait before the second try; it doubles before each one after.
 const FIRST_WAIT: Duration = Duration::from_secs(1);
 
+/// Whether a server's refusal may pass with time: its own trouble, or its limit on this address.
+/// A mobile network shares one address among many phones, and GitHub answers those with 403 or 429.
+pub(crate) fn may_pass(code: u16) -> bool {
+    code >= 500 || matches!(code, 403 | 408 | 429)
+}
+
 /// `attempt` until it succeeds, a final failure, or [`TRIES`] tries.
 pub(crate) fn retrying<T>(mut attempt: impl FnMut() -> Result<T, Failure>) -> Result<T, String> {
     let mut wait = FIRST_WAIT;
@@ -173,11 +183,12 @@ fn fetch_checked(url: &str, sha1: &str, name: &str) -> Result<Vec<u8>, String> {
     let body = retrying(|| {
         let response = agent().get(url).call().map_err(|e| match e {
             ureq::Error::Status(code, _) => {
-                let e = format!("Mojang's server refused {name} ({code}).");
-                if code >= 500 {
-                    Failure::Again(e)
+                if may_pass(code) {
+                    Failure::Again(format!(
+                        "Mojang's server refused {name} ({code}). Try again in a few minutes."
+                    ))
                 } else {
-                    Failure::Final(e)
+                    Failure::Final(format!("Mojang's server refused {name} ({code})."))
                 }
             }
             ureq::Error::Transport(t) => Failure::Again(format!(
@@ -364,22 +375,24 @@ fn fetch_all(
     progress: &(dyn Fn(Progress) + Sync),
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), String> {
-    let total = Progress {
+    let initial = Progress {
         files_total: items.len(),
         bytes_total: items.iter().map(|i| i.size).sum(),
         ..Progress::default()
     };
-    let (files, bytes) = (AtomicU64::new(0), AtomicU64::new(0));
-    let report = |size: u64| {
-        let files = files.fetch_add(1, Ordering::Relaxed) + 1;
-        let bytes = bytes.fetch_add(size, Ordering::Relaxed) + size;
-        progress(Progress {
-            files: files as usize,
-            bytes,
-            ..total
-        });
+    let completed = Mutex::new(initial);
+    let report = |size: u64, fetched: bool| {
+        // Serialize both the counters and their publication so the UI cannot go backwards.
+        let mut done = completed.lock().unwrap();
+        done.files += 1;
+        done.bytes += size;
+        if fetched {
+            done.downloaded_bytes += size;
+            done.last_transfer = Some(Instant::now());
+        }
+        progress(*done);
     };
-    progress(total);
+    progress(initial);
     let queue = Mutex::new(items);
     let failed: Mutex<Option<String>> = Mutex::new(None);
     let stop = AtomicBool::new(false);
@@ -399,13 +412,21 @@ fn fetch_all(
                         .file_name()
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                     let result = if sha1_file(&item.path).as_deref() == Some(item.sha1.as_str()) {
-                        Ok(())
+                        Ok(false)
                     } else {
+                        {
+                            let mut done = completed.lock().unwrap();
+                            if done.transfer_started.is_none() {
+                                done.transfer_started = Some(Instant::now());
+                                progress(*done);
+                            }
+                        }
                         fetch_checked(&item.url, &item.sha1, &name)
                             .and_then(|data| write_file(&item.path, &data))
+                            .map(|()| true)
                     };
                     match result {
-                        Ok(()) => report(item.size),
+                        Ok(fetched) => report(item.size, fetched),
                         Err(e) => {
                             failed.lock().unwrap().get_or_insert(e);
                             stop.store(true, Ordering::Relaxed);
