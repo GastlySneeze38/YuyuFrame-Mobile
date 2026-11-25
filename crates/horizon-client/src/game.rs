@@ -1238,7 +1238,7 @@ struct Game<'a> {
     pad: pad::Pads,
     /// The touch controls (game/touch.rs).
     touch: touch::Touch,
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     mobile: mobile_controls::MobileControls,
     /// What the player plays with: the touch controls show while it is the touch screen
     /// (game/input_mode.rs).
@@ -10959,9 +10959,12 @@ impl<'a> Game<'a> {
             last_input: now,
             pad: Default::default(),
             touch: Default::default(),
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             mobile: Default::default(),
-            input_mode: horizon_client::input_mode::InputMode::first(cfg!(target_os = "android")),
+            input_mode: horizon_client::input_mode::InputMode::first(cfg!(any(
+                target_os = "android",
+                target_os = "ios"
+            ))),
             frames: 0,
             menu_blur_kept: false,
             glint_frame: Default::default(),
@@ -11929,38 +11932,38 @@ fn write_level_for_role(
     }
 }
 
-const MOBILE_PLATFORM: bool = cfg!(target_os = "android");
+const MOBILE_PLATFORM: bool = cfg!(any(target_os = "android", target_os = "ios"));
 impl Game<'_> {
     fn mobile_holds_key(&self, _value: KeyCode, _pressed: bool) -> bool {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             !_pressed && self.android_custom_key_held(_value)
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         false
     }
     fn mobile_holds_mouse(&self, _value: MouseButton, _pressed: bool) -> bool {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             !_pressed && self.android_custom_mouse_held(_value)
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         false
     }
     fn platform_shift_down(&self) -> bool {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             self.mobile_shift_down()
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         false
     }
     fn platform_control_down(&self) -> bool {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             self.mobile_control_down()
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         false
     }
     fn platform_keypad_event(
@@ -11968,7 +11971,7 @@ impl Game<'_> {
         _events: &dyn EventLoopCtl,
         _event: &mut WindowEvent,
     ) -> bool {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if let WindowEvent::KeyboardInput { event: key, .. } = _event {
             if let Some(code) =
                 horizon_client::keypad::resolve_key(key.physical_key, &key.logical_key)
@@ -11982,7 +11985,7 @@ impl Game<'_> {
         false
     }
     fn platform_held_modifiers(&mut self, _event: &WindowEvent) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if matches!(
             _event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Focused(false)

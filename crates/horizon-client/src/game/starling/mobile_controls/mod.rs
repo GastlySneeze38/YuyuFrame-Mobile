@@ -1,4 +1,4 @@
-// game-module-cfg: target_os = "android"
+// game-module-cfg: any(target_os = "android", target_os = "ios")
 // Adapted from Horizon Android at fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // See THIRD_PARTY_NOTICES.md and LICENSE.
@@ -96,7 +96,7 @@ impl Game<'_> {
                 })
     }
     pub(in crate::game) fn mobile_controls_enabled(&self) -> bool {
-        cfg!(target_os = "android")
+        cfg!(any(target_os = "android", target_os = "ios"))
     }
     pub(in crate::game) fn mobile_pad_end(&mut self, released: bool) {
         if released {
@@ -281,7 +281,11 @@ impl Game<'_> {
             self.window.as_ref().map_or(1, |w| w.inner_size().height),
         );
         tc.viewport(width, height);
-        tc.safe_insets(width, height, crate::android::safe_insets());
+        #[cfg(target_os = "android")]
+        let insets = crate::android::safe_insets();
+        #[cfg(target_os = "ios")]
+        let insets = crate::ios::safe_insets();
+        tc.safe_insets(width, height, insets);
         let flying = self.player.as_ref().is_some_and(|p| p.flying);
         if shown && flying && !tc.vertical_movement {
             self.toggles.0[0] = horizon_client::keymapping::KeyState::toggle(true, true);

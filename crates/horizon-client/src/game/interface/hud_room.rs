@@ -50,7 +50,7 @@ impl HudArea {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub(super) fn local_point(&self, point: [f32; 2], scale: f32) -> [f32; 2] {
         std::array::from_fn(|axis| point[axis] / scale - self.origin[axis])
     }
@@ -121,7 +121,7 @@ impl Game<'_> {
         interface_safe_zone([batch.width, batch.height], margins)
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub(super) fn button_safe_insets(&self, batch: &HudBatch) -> [f32; 4] {
         use horizon_client::android_display::{DisplayOption as D, interface_safe_zone};
         interface_safe_zone(

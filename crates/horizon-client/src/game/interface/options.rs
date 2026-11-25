@@ -203,7 +203,7 @@ impl Game<'_> {
         self.open_options_at(from_title, Page::Main);
     }
     pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         self.mobile_options_open();
         // Gameplay keys must not stay held behind the options screen, where
         // bindings can also change before the physical key is released.
@@ -478,7 +478,7 @@ impl Game<'_> {
                 Event::ButtonClick => self.audio.play_button_click(),
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
-                    #[cfg(target_os = "android")]
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
                     self.mobile_options_apply(true);
                     self.settings.save(&Self::options_path());
                     self.settings.keys.sync_action_bindings();
@@ -492,7 +492,7 @@ impl Game<'_> {
                 // Every step of a drag: applied, and written once when the slider is let go
                 // (`Changed`).
                 Event::SliderDrag => {
-                    #[cfg(target_os = "android")]
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
                     self.mobile_options_apply(false);
                     self.apply_settings();
                 }
@@ -517,7 +517,7 @@ impl Game<'_> {
                 Event::Close => {
                     // A drag that ended without a release (`Changed`) still has its touch settings
                     // written.
-                    #[cfg(target_os = "android")]
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
                     self.mobile_options_apply(true);
                     self.settings.save(&Self::options_path());
                     // The mods switched on the Mods page, in one reload (`switch_mods`).

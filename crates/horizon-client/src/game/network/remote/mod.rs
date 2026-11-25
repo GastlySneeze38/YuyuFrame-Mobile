@@ -965,7 +965,7 @@ fn number_format(f: &play::NumberFormat) -> horizon_client::scoreboard::NumberFo
 }
 
 impl Game<'_> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub(super) fn touch_mining_progress(&self) -> f32 {
         self.remote
             .as_ref()
@@ -9521,7 +9521,7 @@ impl Game<'_> {
     /// the main hand's item, then the off hand's turn (its block, its item).
     /// The server does each packet's part with that packet's hand only.
     fn remote_use_hands(&mut self, attempt: mod_api::InteractionAttempt) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if self.mobile.touch_shield {
             let hand = if self
                 .offhand

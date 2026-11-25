@@ -351,7 +351,7 @@ impl Pads {
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub(super) fn set_touch_state(&mut self, state: PadState) {
         self.touch = state;
     }
@@ -464,7 +464,7 @@ impl Game<'_> {
             self.ui.options.pad_glyphs = Glyphs::of(&self.settings.controller, self.pad.style);
             self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         }
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let hardware = {
             self.mobile.keypad.configure(&self.settings.keypad);
             let keypad = if !self.settings.keypad.enabled || self.pad_in_menu() || !self.focused {
@@ -556,7 +556,7 @@ impl Game<'_> {
             }
         }
         self.pad_menu_frame(event_loop);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         self.mobile_pad_end(state.triggers == [0.; 2] && self.pad.late_releases.is_empty());
     }
 
@@ -723,7 +723,7 @@ impl Game<'_> {
                 }
                 Ok(())
             }
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             Route::Sneak if self.touch_shown() && self.mobile.controls.vertical_movement => {
                 self.toggles.0[SNEAK].is_down = down;
                 self.sync_toggle(SNEAK);
@@ -881,7 +881,7 @@ impl Game<'_> {
         } else {
             self.pad.touch.left
         };
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if self.touch_shown()
             && (!self.mobile.controls.settings.analog_movement
                 || self.mobile.controls.settings.mode

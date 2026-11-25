@@ -1,6 +1,7 @@
 //! What the game asks of iOS, as `android.rs` does of Android: the launch arguments, the
-//! pasteboard, links and the audio session. Touch, the keyboard, the safe areas and the way back
-//! to the launcher are still to come (docs/launcher/ios.md in YuyuFrame).
+//! pasteboard, links, the audio session, the way back to the launcher, the safe areas and the
+//! haptic taps of the touch controls. Touches and the keyboard come through winit
+//! (docs/launcher/ios.md in YuyuFrame).
 //!
 //! `platform::set` is left alone on purpose: a registered platform means Android's start-up
 //! (accounts sealed by its keystore, files prepared by a Java it downloads).
@@ -163,6 +164,79 @@ pub(crate) fn show_launcher() -> bool {
 /// False when the game has no window (not started yet in this app).
 pub fn show_game() -> bool {
     bring_front(true)
+}
+
+/// UIKit's `UIEdgeInsets`: four `CGFloat`s, which are `f64` on every iOS device the game runs on
+/// (64-bit only).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct EdgeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+
+// SAFETY: the layout above is UIKit's struct, named as UIKit names it.
+unsafe impl objc2::Encode for EdgeInsets {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+        "UIEdgeInsets",
+        &[f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING],
+    );
+}
+
+/// How far the notch, the Dynamic Island and the home indicator reach into the game's window,
+/// in its pixels: left, top, right, bottom, as `android::safe_insets` gives them to the touch
+/// controls. All 0 off the main thread or before the game has a window.
+pub fn safe_insets() -> [u32; 4] {
+    let Some(window) = windows()
+        .and_then(|windows| windows.into_iter().find(|(_, game)| *game))
+        .map(|(window, _)| window)
+    else {
+        return [0; 4];
+    };
+    // SAFETY: on the main thread (`windows` checked it): `safeAreaInsets` is a UIView property
+    // (iOS 11+), `screen` the window's UIScreen and `scale` its points-to-pixels factor.
+    let (insets, scale) = unsafe {
+        let insets: EdgeInsets = msg_send![&*window, safeAreaInsets];
+        let screen: Retained<AnyObject> = msg_send![&*window, screen];
+        let scale: f64 = msg_send![&*screen, scale];
+        (insets, scale)
+    };
+    let pixels = |points: f64| (points * scale).round().max(0.0) as u32;
+    [
+        pixels(insets.left),
+        pixels(insets.top),
+        pixels(insets.right),
+        pixels(insets.bottom),
+    ]
+}
+
+/// A tap of the phone's haptic engine for the touch controls' feedback (a block broken, a hit).
+/// iOS has no vibration of a chosen length for apps: `millis` only says whether to tap (more
+/// than 0) or not, and a light, medium or heavy tap stands for a short, middle or long one.
+pub fn vibrate(millis: u32) {
+    if millis == 0 || MainThreadMarker::new().is_none() {
+        return;
+    }
+    // `UIImpactFeedbackStyle`: light 0, medium 1, heavy 2.
+    let style: isize = match millis {
+        0..=20 => 0,
+        21..=60 => 1,
+        _ => 2,
+    };
+    // SAFETY: on the main thread: a UIImpactFeedbackGenerator made with one of its styles, then
+    // `impactOccurred`, which takes nothing.
+    unsafe {
+        let Some(class) = AnyClass::get(c"UIImpactFeedbackGenerator") else {
+            return;
+        };
+        let generator: Option<Retained<AnyObject>> =
+            msg_send![msg_send![class, alloc], initWithStyle: style];
+        if let Some(generator) = generator {
+            let () = msg_send![&*generator, impactOccurred];
+        }
+    }
 }
 
 fn audio_session() -> Option<Retained<AnyObject>> {

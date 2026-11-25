@@ -136,7 +136,7 @@ impl Game<'_> {
     /// How far a finger turned the inventory's player, in degrees, while using direct touch.
     /// Virtual Mouse uses the same cursor-following preview as a physical mouse.
     pub(in crate::game) fn player_spin(&self) -> Option<f32> {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if self.mobile.ui.virtual_mouse {
             return None;
         }

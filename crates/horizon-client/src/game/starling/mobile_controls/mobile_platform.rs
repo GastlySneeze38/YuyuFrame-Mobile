@@ -1,4 +1,34 @@
 //! The port uses Starling's existing Android IME and folder bridge.
+//!
+//! YuyuFrame, iOS: no text mirror. winit's view takes the keyboard itself (`set_ime_allowed`, which
+//! the touch keyboard of `touch/mod.rs` asks for) and hands each character on as a key event, so
+//! `active` stays false there and the generic path shows it. Vibration is a haptic tap
+//! (`ios::vibrate`).
+use super::Output;
+#[cfg(target_os = "ios")]
+pub use ios::*;
+#[cfg(target_os = "android")]
+pub use android::*;
+
+#[cfg(target_os = "ios")]
+mod ios {
+    use super::Output;
+    pub fn active() -> bool {
+        false
+    }
+    pub fn show(_text: &str) {}
+    pub fn hide() {}
+    pub fn poll() -> Vec<Output> {
+        Vec::new()
+    }
+    pub fn vibrate(p: horizon_client::gamepad::Pulse) {
+        crate::ios::vibrate(p.millis);
+    }
+    pub fn cancel_vibration() {}
+}
+
+#[cfg(target_os = "android")]
+mod android {
 use super::Output;
 use std::sync::Mutex;
 #[derive(Default)]
@@ -70,6 +100,7 @@ pub fn vibrate(p: horizon_client::gamepad::Pulse) {
 }
 pub fn cancel_vibration() {
     crate::android::vibrate(0);
+}
 }
 pub fn open_documents(folder: &str) -> bool {
     horizon_client::platform::open_folder(&std::path::Path::new(".").join(folder)).unwrap_or(false)
