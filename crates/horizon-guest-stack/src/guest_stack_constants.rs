@@ -1,7 +1,11 @@
 /// At the reporter's measured ceiling of about 1.8 KB per frame, 128 MiB
 /// covers about 70k plain frames, including Java's deepest reported 59k case.
-#[cfg(not(all(target_os = "android", target_pointer_width = "32")))]
+#[cfg(not(any(all(target_os = "android", target_pointer_width = "32"), target_os = "ios")))]
 pub const GUEST_STACK_BYTES: usize = 128 * 1024 * 1024;
+/// iOS runs no wasm guest, and limits a process's address space far more than Android: its
+/// threads reserve only the host's room, not 136 MiB each.
+#[cfg(target_os = "ios")]
+pub const GUEST_STACK_BYTES: usize = 0;
 /// 32-bit Android runs wasm on Pulley, Wasmtime's interpreter, whose stack is this much heap
 /// reserved per group (`Config::max_wasm_stack`), not the thread's: 128 MiB a group would take
 /// the address space the threads' reservations took before (#590). 16 MiB covers about 9k plain

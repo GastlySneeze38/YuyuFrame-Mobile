@@ -17,15 +17,15 @@ impl Game<'_> {
 /// not, so a person can still close the window. A modifier change counts: `reconcile` would
 /// release a Shift or Ctrl the run holds.
 /// `event`'s key without the modifiers held (winit's modifier supplement). Starling: Android's winit has
-/// none, and the logical key is the nearest; a function apart so `window_event`, which mods target, has no
-/// cfg in its body (horizon-mixins refuses one).
+/// none, nor has iOS's, and the logical key is the nearest; a function apart so `window_event`, which mods
+/// target, has no cfg in its body (horizon-mixins refuses one).
 fn key_without_modifiers(event: &winit::event::KeyEvent) -> winit::keyboard::Key {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
         event.key_without_modifiers()
     }
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         event.logical_key.clone()
     }
@@ -357,6 +357,8 @@ impl ApplicationHandler for Game<'_> {
             {
                 log::warn!("Horizon: the window's surface did not come back: {e}");
             }
+            #[cfg(target_os = "ios")]
+            crate::ios::activate_audio();
             self.audio.resume_output();
             window.request_redraw();
             // The next time it goes, it saves again.
@@ -482,6 +484,18 @@ impl ApplicationHandler for Game<'_> {
         // Every event-loop pass, drawn or not: a window that stops redrawing (a lost
         // device, an occluded window) must still end after a server crash.
         self.exit_after_server_crash();
+        // A call or an alarm took the sound without taking the window. After one, the output is
+        // paused first: it still counts as playing, and `play` alone would do nothing. In the
+        // background `resumed` brings it back instead.
+        #[cfg(target_os = "ios")]
+        match crate::ios::take_audio_interruption() {
+            Some(crate::ios::AudioInterruption::Began) => self.audio.suspend_output(),
+            Some(crate::ios::AudioInterruption::Ended) if crate::ios::activate_audio() => {
+                self.audio.suspend_output();
+                self.audio.resume_output();
+            }
+            _ => {}
+        }
         self.idle(event_loop);
     }
     /// Android took the window away (the app went to the background, the screen went off): its

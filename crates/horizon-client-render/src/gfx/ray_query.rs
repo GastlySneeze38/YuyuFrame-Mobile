@@ -70,7 +70,7 @@ pub(super) fn note_offer(adapter: &wgpu::Adapter) {
         return;
     }
     // wgpu offers ray queries only when the driver lists all four extensions.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         let missing = horizon_hdr::ray_query_missing_extensions(adapter).unwrap_or_default();
         crate::graphics::set_ray_tracing_missing((!missing.is_empty()).then_some(&missing));
@@ -89,7 +89,7 @@ pub(super) fn note_offer(adapter: &wgpu::Adapter) {
             );
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         crate::graphics::set_ray_tracing_missing(None);
         log::info!(

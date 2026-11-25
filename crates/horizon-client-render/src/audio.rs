@@ -1270,7 +1270,8 @@ fn card_fingerprint() -> Option<String> {
     {
         std::fs::read_to_string("/proc/asound/cards").ok()
     }
-    #[cfg(target_os = "android")]
+    // iOS has one output too, which the system routes (cpal's "Default Device").
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         Some(String::new())
     }
@@ -1284,7 +1285,12 @@ fn card_fingerprint() -> Option<String> {
                 .join("\n"),
         )
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )))]
     {
         None
     }

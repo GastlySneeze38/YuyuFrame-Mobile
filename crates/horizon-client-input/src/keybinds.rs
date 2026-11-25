@@ -313,12 +313,12 @@ pub use horizon_client_core::key_display::{
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.
-// Not on Android: winit's backend there has no key without modifiers (the key names stay as
-// they are).
-#[cfg(target_os = "android")]
+// Not on Android or iOS: winit's backends there have no key without modifiers (the key names
+// stay as they are).
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn learn_layout(_event: &winit::event::KeyEvent) {}
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn learn_layout(event: &winit::event::KeyEvent) {
     use winit::keyboard::{Key, PhysicalKey};
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -380,13 +380,13 @@ pub fn raw_key_code(physical: winit::keyboard::PhysicalKey) -> u32 {
             NativeKeyCode::MacOS(c) | NativeKeyCode::Windows(c) => c.into(),
             NativeKeyCode::Unidentified => 0,
         },
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         PhysicalKey::Code(_) => {
             use winit::platform::scancode::PhysicalKeyExtScancode;
             physical.to_scancode().unwrap_or(0)
         }
-        // Starling: Android's winit has no scan codes for the keys it names.
-        #[cfg(target_os = "android")]
+        // Starling: Android's winit has no scan codes for the keys it names, nor has iOS's.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         PhysicalKey::Code(_) => 0,
     }
 }

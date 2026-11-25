@@ -774,8 +774,8 @@ impl Arena {
 /// Translucent quads' large pages keep their size. Adapted from
 /// Vasysik/horizon-android (`Arena::growth_limit`, its commits acfb2bae43 and
 /// 8c08d71508), MIT, copyright (c) 2026 Ludovic Marie and the Horizon
-/// contributors; see THIRD_PARTY_NOTICES.md.
-#[cfg(all(target_os = "android", target_pointer_width = "64"))]
+/// contributors; see THIRD_PARTY_NOTICES.md. iOS takes the same ceiling.
+#[cfg(any(all(target_os = "android", target_pointer_width = "64"), target_os = "ios"))]
 fn page_ceiling(page_bytes: u64) -> u64 {
     if page_bytes == PAGE_BYTES {
         32 << 20
@@ -785,7 +785,7 @@ fn page_ceiling(page_bytes: u64) -> u64 {
 }
 /// The bytes past which pages of `page_bytes` stop growing: all of them here
 /// (see the 64-bit Android one).
-#[cfg(not(all(target_os = "android", target_pointer_width = "64")))]
+#[cfg(not(any(all(target_os = "android", target_pointer_width = "64"), target_os = "ios")))]
 fn page_ceiling(page_bytes: u64) -> u64 {
     page_bytes
 }

@@ -26,7 +26,7 @@ pub const RAY_QUERY_EXTENSIONS: [&str; 4] = [
 
 /// Which of [`RAY_QUERY_EXTENSIONS`] this adapter's driver does not list (`None` without
 /// a Vulkan adapter to ask). Empty means the driver lists everything ray queries need.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub fn ray_query_missing_extensions(adapter: &wgpu::Adapter) -> Option<Vec<&'static str>> {
     use wgpu::hal::api::Vulkan;
     // Safety: read-only enumeration on the adapter's own physical device.
@@ -53,7 +53,7 @@ pub fn ray_query_missing_extensions(adapter: &wgpu::Adapter) -> Option<Vec<&'sta
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.
 /// `None` leaves opening to wgpu.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub fn open_vulkan_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
@@ -104,7 +104,7 @@ pub fn experimental_features() -> wgpu::ExperimentalFeatures {
 /// content is BT.709, peaks at `peak` nits and is no darker than `black`. Needs a
 /// device from `open_vulkan_device` and a configured surface; does nothing otherwise.
 pub fn set_metadata(device: &wgpu::Device, surface: &wgpu::Surface<'_>, peak: f32, black: f32) {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         use wgpu::hal::api::Vulkan;
         // Safety: read-only access to handles wgpu keeps alive while these guards live.
@@ -131,11 +131,11 @@ pub fn set_metadata(device: &wgpu::Device, surface: &wgpu::Surface<'_>, peak: f3
         // Safety: a live swapchain of this device, one metadata entry for it.
         unsafe { loader.set_hdr_metadata(&[swapchain], &[metadata(peak, black)]) };
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     let _ = (device, surface, peak, black);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn metadata(peak: f32, black: f32) -> ash::vk::HdrMetadataEXT<'static> {
     let xy = |x, y| ash::vk::XYColorEXT { x, y };
     ash::vk::HdrMetadataEXT::default()
@@ -151,7 +151,7 @@ fn metadata(peak: f32, black: f32) -> ash::vk::HdrMetadataEXT<'static> {
         .max_frame_average_light_level(0.0)
 }
 
-#[cfg(all(test, not(target_os = "macos")))]
+#[cfg(all(test, not(any(target_os = "macos", target_os = "ios"))))]
 mod tests {
     #[test]
     fn the_frame_average_is_sent_as_unknown() {

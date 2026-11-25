@@ -126,13 +126,13 @@ pub type PlatformClipboard = (fn() -> Option<String>, fn(&str) -> bool);
 
 static PLATFORM: std::sync::OnceLock<PlatformClipboard> = std::sync::OnceLock::new();
 
-/// Use the platform's clipboard in place of the system's (arboard has no Android backend).
+/// Use the platform's clipboard in place of the system's (arboard has no Android or iOS backend).
 pub fn set_platform(clipboard: PlatformClipboard) {
     let _ = PLATFORM.set(clipboard);
 }
 
-/// Android's clipboard, through the platform's hooks: arboard has no Android backend.
-#[cfg(target_os = "android")]
+/// A phone's clipboard, through the platform's hooks: arboard has no Android or iOS backend.
+#[cfg(any(target_os = "android", target_os = "ios"))]
 mod arboard {
     pub struct Clipboard;
     pub enum Error {

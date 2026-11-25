@@ -42,6 +42,10 @@ pub fn opener(path: &Path) -> io::Result<Opener> {
 
 /// Opens `path` without waiting for its handler.
 pub fn open_path(path: &Path) -> io::Result<()> {
+    // iOS lets an app start no other program, and has no file manager to point at a folder.
+    if cfg!(target_os = "ios") {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
     match opener(path)? {
         // ShellExecuteExW with the default verb: `open` only takes its folder shortcut
         // (SHOpenFolderAndSelectItems) for a path that is a directory, never for a URI.
@@ -52,13 +56,27 @@ pub fn open_path(path: &Path) -> io::Result<()> {
     }
 }
 
+/// How iOS opens a link: UIKit's call lives in the game crate (`ios.rs`), above this library.
+#[cfg(target_os = "ios")]
+static URL_OPENER: std::sync::OnceLock<fn(&str) -> io::Result<()>> = std::sync::OnceLock::new();
+
+/// Registers iOS's way of opening a link, once, before the game starts.
+#[cfg(target_os = "ios")]
+pub fn set_url_opener(open: fn(&str) -> io::Result<()>) {
+    let _ = URL_OPENER.set(open);
+}
+
 /// `Blaze3D.openUri`: the desktop's handler for a link, which is handed over as it is (no path
 /// is resolved). On Windows ShellExecute keeps it one Unicode value, without passing its query
 /// string through a command interpreter.
 pub fn open_uri(uri: &str) -> io::Result<()> {
     #[cfg(windows)]
     return open::that_detached(uri);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "ios")]
+    return URL_OPENER
+        .get()
+        .map_or(Err(io::ErrorKind::Unsupported.into()), |open| open(uri));
+    #[cfg(not(any(windows, target_os = "ios")))]
     spawn(
         if cfg!(target_os = "macos") {
             "open"

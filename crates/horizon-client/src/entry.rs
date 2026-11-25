@@ -24,16 +24,21 @@ impl Startup {
 /// and resource marker metadata only: no logging, account loading, mods or worker threads.
 /// Account IO, cwd changes and command registration remain in Options::read, after leases.
 pub fn prepare() -> Startup {
-    // The holder (mod lease process) is built for desktop only.
-    #[cfg(not(target_os = "android"))]
+    // The holder (mod lease process) is built for desktop only: a phone starts no other process.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     horizon_mod_package::holder::enter();
+    #[cfg(target_os = "ios")]
+    crate::ios::install();
     let result: crate::Result<_> = (|| {
         let mut command = std::process::Command::new(std::env::current_exe()?);
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         command.args(std::env::args_os().skip(1));
         // The process has no command line: `horizon-args.txt`'s, read by `android::main`.
         #[cfg(target_os = "android")]
         command.args(crate::android::args());
+        // Nor on iOS: what the app hosting the game gave `ios::set_args`.
+        #[cfg(target_os = "ios")]
+        command.args(crate::ios::args());
         let launch = LaunchArguments::for_command(&command)?;
         let options = game::Options::validate(launch.clone())?;
         Ok((launch, options))
@@ -45,9 +50,9 @@ pub fn prepare() -> Startup {
     let Some(options) = options else {
         std::process::exit(0);
     };
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let capture = horizon_mod_package::holder::acquire(&launch);
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let capture = None;
     Startup {
         launch,
@@ -446,7 +451,7 @@ fn raise_open_file_limit() {
     {
         use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
         let limit = getrlimit(Resource::Nofile);
-        let hard = if cfg!(target_os = "macos") {
+        let hard = if cfg!(any(target_os = "macos", target_os = "ios")) {
             Some(limit.maximum.map_or(10_240, |h| h.min(10_240)))
         } else {
             limit.maximum

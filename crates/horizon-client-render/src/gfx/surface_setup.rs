@@ -178,7 +178,7 @@ pub(super) async fn open_adapter(
         ..Default::default()
     };
     let open = async |desc: &wgpu::DeviceDescriptor<'_>| {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         if info.backend == wgpu::Backend::Vulkan
             && let Some(opened) = horizon_hdr::open_vulkan_device(adapter, desc)
         {

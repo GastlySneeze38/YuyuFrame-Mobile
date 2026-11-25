@@ -4,8 +4,8 @@ use super::*;
 /// Exclusive namespace ownership, acquired without creating or upgrading a gate.
 pub struct Cleanup {
     /// Read by bootstrap-record collection (`holder::record::gc`), which is built on Linux,
-    /// macOS and Windows only: not on Android.
-    #[cfg_attr(target_os = "android", allow(dead_code))]
+    /// macOS and Windows only: not on Android or iOS.
+    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     pub(crate) data: Dir,
     _gate: Locked,
 }

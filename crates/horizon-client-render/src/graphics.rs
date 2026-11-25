@@ -320,7 +320,7 @@ impl GraphicsApi {
         const MACOS: [GraphicsApi; 1] = [GraphicsApi::Auto];
         if cfg!(windows) {
             &WINDOWS
-        } else if cfg!(target_os = "macos") {
+        } else if cfg!(any(target_os = "macos", target_os = "ios")) {
             &MACOS
         } else {
             &LINUX
@@ -1065,7 +1065,7 @@ impl Graphics {
             .or_else(|| Some(self.shader_pack.clone()).filter(|p| !p.is_empty()))?;
         let profile = match self.shader_profile.as_str() {
             "" => env("HORIZON_SHADER_PROFILE").unwrap_or_else(|| {
-                if cfg!(target_os = "android") {
+                if cfg!(any(target_os = "android", target_os = "ios")) {
                     AUTO_PROFILE.to_owned()
                 } else {
                     String::new()
@@ -1502,7 +1502,7 @@ impl Graphics {
         // silicon only the performance cores count (horizon_threads::default_workers).
         // A phone leaves two, as Starling was measured with: half its cores are small ones, and
         // a hot phone slows every core down.
-        let auto = if cfg!(target_os = "android") {
+        let auto = if cfg!(any(target_os = "android", target_os = "ios")) {
             horizon_threads::worker_count().saturating_sub(2).max(1)
         } else {
             horizon_threads::jobs::default_threads()

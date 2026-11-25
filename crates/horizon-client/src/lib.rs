@@ -1,13 +1,16 @@
 //! Gameplay and startup, above the reusable client library.
-// The Android hooks (android.rs) call into the activity through JNI and the C library.
+// The Android hooks (android.rs) call into the activity through JNI and the C library, and the
+// iOS ones (ios.rs) into UIKit through the Objective-C runtime.
 // No `#![recursion_limit]` or other inner attribute horizon-mixins doesn't know here: the
 // launcher's horizon-mixins then rejects every native mod targeting this crate (#8169).
-#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
+#![cfg_attr(not(any(target_os = "android", target_os = "ios")), forbid(unsafe_code))]
 extern crate self as horizon_client;
 pub use horizon_client_lib::carrier_store;
 pub use horizon_client_lib::*;
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(target_os = "ios")]
+pub mod ios;
 // YuyuFrame: Starling's launcher (ha_launcher/, Horizon Android 0.7.8's) is removed.
 #[doc(hidden)]
 pub mod entry;
