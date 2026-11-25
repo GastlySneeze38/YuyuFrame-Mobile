@@ -39,18 +39,30 @@ pub fn main() {
 /// app has launched: it returns as soon as the game runs in the app's own loop (winit's
 /// `EventLoopExtIOS::spawn_app`), its window in front of the launcher's.
 ///
-/// Once per process: winit's loop and the engine's state are made once, so false (nothing done)
-/// when the game already started; `horizon_client::ios::show_game` brings it back instead, and
-/// another instance needs the app opened again.
+/// Once per process: winit's loop and the engine's state are made once, so
+/// [`StartError::AlreadyStarted`] (nothing done) when the game already started, a failed start
+/// included; `horizon_client::ios::show_game` brings a running game back instead, and another
+/// instance needs the app opened again. A start that fails says why
+/// ([`StartError::Failed`]) instead of ending the process, which is the host's too.
 #[cfg(target_os = "ios")]
-pub fn start_in_app(args: Vec<String>) -> bool {
+pub fn start_in_app(args: Vec<String>) -> Result<(), StartError> {
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return false;
+        return Err(StartError::AlreadyStarted);
     }
     horizon_client::ios::set_args(args);
     main();
-    true
+    horizon_client::ios::take_start_error().map_or(Ok(()), |e| Err(StartError::Failed(e)))
+}
+
+/// Why [`start_in_app`] did not start the game.
+#[cfg(target_os = "ios")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartError {
+    /// The game started earlier in this process, whatever became of it.
+    AlreadyStarted,
+    /// The start ended on this error.
+    Failed(String),
 }
 
 /// Establish the executable main thread stack before initialization.

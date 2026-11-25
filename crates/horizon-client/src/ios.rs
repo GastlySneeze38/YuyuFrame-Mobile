@@ -39,6 +39,22 @@ pub(crate) fn args() -> Vec<String> {
     ARGS.get().cloned().unwrap_or_default()
 }
 
+/// Why the game did not start, for the app hosting it: on iOS a failed start does not end the
+/// process (`entry::start`), which is the launcher's too.
+static START_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn set_start_error(message: String) {
+    *START_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+}
+
+/// The error the last start ended on, once.
+pub fn take_start_error() -> Option<String> {
+    START_ERROR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 /// What the game needs of the system before anything else starts.
 pub(crate) fn install() {
     horizon_client_input::clipboard::set_platform((clipboard_get, clipboard_set));
@@ -150,6 +166,10 @@ fn bring_front(game: bool) -> bool {
             }
         }
     }
+    // The game's loop stops drawing behind the launcher and picks up again in front of it.
+    if HIDDEN.swap(!game, Ordering::AcqRel) != !game {
+        VISIBILITY_CHANGE.store(if game { 2 } else { 1 }, Ordering::Release);
+    }
     true
 }
 
@@ -236,6 +256,38 @@ pub fn vibrate(millis: u32) {
         if let Some(generator) = generator {
             let () = msg_send![&*generator, impactOccurred];
         }
+    }
+}
+
+/// The device's class for the settings a first start picks (`apply_mobile_defaults`), from its
+/// memory (`NSProcessInfo.physicalMemory`). None if Foundation does not answer.
+pub(crate) fn device_tier() -> Option<horizon_client_render::system_stats::Tier> {
+    // SAFETY: a class method of Foundation taking nothing, then a `unsigned long long` property.
+    let ram: u64 = unsafe {
+        let info: Option<Retained<AnyObject>> = msg_send![class!(NSProcessInfo), processInfo];
+        msg_send![&*info?, physicalMemory]
+    };
+    (ram > 0).then(|| horizon_client_render::system_stats::Tier::of_apple_memory(ram))
+}
+
+/// The game's window was hidden behind the launcher's (`show_launcher`) or shown again
+/// (`show_game`) and the game's loop has not taken it yet: 0 nothing, 1 hidden, 2 shown.
+static VISIBILITY_CHANGE: AtomicU8 = AtomicU8::new(0);
+/// The game's window is hidden behind the launcher's: nothing is drawn meanwhile.
+static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the game's window is behind the launcher's.
+pub(crate) fn game_hidden() -> bool {
+    HIDDEN.load(Ordering::Acquire)
+}
+
+/// The last change of the game's window since the last call, for the game's loop: `Some(true)`
+/// hidden, `Some(false)` shown again.
+pub(crate) fn take_visibility_change() -> Option<bool> {
+    match VISIBILITY_CHANGE.swap(0, Ordering::AcqRel) {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
     }
 }
 

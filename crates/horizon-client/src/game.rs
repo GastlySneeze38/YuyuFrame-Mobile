@@ -11573,13 +11573,18 @@ pub(crate) fn run_with(
             .spawn(move || horizon_client::bedrock_touch::fetch_logged(&root));
     }
     let options_txt = Game::options_path();
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let first_start = !options_txt.exists();
     #[allow(unused_mut)]
     let mut early_settings = Settings::load(&options_txt);
     // A phone's first start: settings for what it can take, saved before anything reads them.
     #[cfg(target_os = "android")]
-    if first_start && let Some(tier) = horizon_client::system_stats::Tier::here() {
+    let tier = horizon_client::system_stats::Tier::here();
+    // iOS tells no core clocks: its memory alone (`Tier::of_apple_memory`).
+    #[cfg(target_os = "ios")]
+    let tier = crate::ios::device_tier();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    if first_start && let Some(tier) = tier {
         horizon_client::graphics::apply_mobile_defaults(tier, &mut early_settings);
         early_settings.save(&options_txt);
         log::info!(

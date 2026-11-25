@@ -496,7 +496,39 @@ impl ApplicationHandler for Game<'_> {
             }
             _ => {}
         }
+        // The game's window behind the launcher's (the pause menu's Launcher row): it stays open
+        // under its pause menu, as on Android, but draws nothing until it is in front again.
+        // Hiding saves as the background does: iOS may end the app while the launcher shows.
+        #[cfg(target_os = "ios")]
+        {
+            match crate::ios::take_visibility_change() {
+                Some(true) => {
+                    self.audio.suspend_output();
+                    self.touch_release_all();
+                    self.save_for_background();
+                }
+                Some(false) => {
+                    self.audio.suspend_output();
+                    self.audio.resume_output();
+                    self.saved_for_background = false;
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+                None => {}
+            }
+            if crate::ios::game_hidden() {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                return;
+            }
+        }
         self.idle(event_loop);
+    }
+    /// iOS is short of memory, and ends the app next if it stays so, with no word to the player:
+    /// the world is saved at once so nothing played is lost.
+    fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {
+        log::warn!("Horizon: the system is short of memory; saving the world");
+        self.save_for_background();
     }
     /// Android took the window away (the app went to the background, the screen went off): its
     /// surface goes now, the sound stops, and the world is saved unless losing the focus saved it

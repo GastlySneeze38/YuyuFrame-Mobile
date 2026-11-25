@@ -257,6 +257,12 @@ pub fn start<G>(
         if !usage {
             crash::report_error(&home, side, &*error);
         }
+        // iOS: the process is the launcher's too, so it goes on; the launcher says why.
+        #[cfg(target_os = "ios")]
+        {
+            crate::ios::set_start_error(error.to_string());
+            return;
+        }
         // Started from Explorer, the console window closes with the game:
         // keep the message on screen until it is read.
         #[cfg(windows)]
@@ -267,7 +273,7 @@ pub fn start<G>(
         // The activity ends first, and the process without the C library's exit handlers.
         #[cfg(target_os = "android")]
         crate::android::finish_and_exit();
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         std::process::exit(if usage {
             game::exit_code::USAGE
         } else {

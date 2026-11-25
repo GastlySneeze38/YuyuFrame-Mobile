@@ -146,6 +146,21 @@ impl Tier {
             Self::Low
         }
     }
+    /// An iPhone's or iPad's, from its memory alone: iOS gives an app no core clocks, and every
+    /// Apple chip of the iOS versions the game supports is fast enough for the High tier's
+    /// settings, while memory is what ends the game (iOS stops an app past its share without a
+    /// warning to the player). 8 GB devices (iPhone 15 Pro and later) are High, 6 GB ones
+    /// (iPhone 13 Pro to 15) Mid, 4 GB and less Low. iOS reports a little under the label.
+    pub fn of_apple_memory(ram_bytes: u64) -> Self {
+        let gib = ram_bytes as f64 / f64::from(1u32 << 30);
+        if gib >= 7.0 {
+            Self::High
+        } else if gib >= 5.0 {
+            Self::Mid
+        } else {
+            Self::Low
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Low => "low",

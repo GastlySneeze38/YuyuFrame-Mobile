@@ -1183,7 +1183,9 @@ impl ApplicationHandler for App {
             Step::Done => event_loop.exit(),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {
-                    if cfg!(target_os = "android") {
+                    // On a phone the failure stays on screen: Android has no terminal to show it,
+                    // and iOS ignores `exit` (the app hosting the game goes on).
+                    if cfg!(any(target_os = "android", target_os = "ios")) {
                         log::error!("Horizon: {e}");
                         loading.failure = Some(e.to_string());
                         return;
@@ -1203,6 +1205,11 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Ready(game) = self {
             game.exiting(event_loop);
+        }
+    }
+    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
+        if let App::Ready(game) = self {
+            game.memory_warning(event_loop);
         }
     }
 }

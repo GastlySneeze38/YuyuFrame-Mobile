@@ -871,6 +871,18 @@ impl ApplicationHandler for Split<'_> {
         }
     }
 
+    /// YuyuFrame, iOS: the game's own going to the background (`Game::suspended`: the surface
+    /// goes, the sound stops, the world is saved). iOS ends an app that still draws with the GPU
+    /// in the background. Android keeps Starling's behaviour, which never forwarded it.
+    #[cfg(target_os = "ios")]
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.host.suspended(event_loop);
+    }
+
+    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
+        self.host.memory_warning(event_loop);
+    }
+
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
         for i in (0..self.players()).rev() {
             if let Some((player, _)) = self.player(i) {
