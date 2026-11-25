@@ -79,19 +79,40 @@
 
 use std::os::raw::c_void;
 
+use crate::application::ApplicationHandler;
 use crate::event_loop::EventLoop;
 use crate::monitor::{MonitorHandle, VideoModeHandle};
 use crate::window::{Window, WindowAttributes};
 
 /// Additional methods on [`EventLoop`] that are specific to iOS.
 pub trait EventLoopExtIOS {
+    /// The type of user events the loop carries.
+    type UserEvent: 'static;
+
     /// Returns the [`Idiom`] (phone/tablet/tv/etc) for the current device.
     fn idiom(&self) -> Idiom;
+
+    /// Horizon (YuyuFrame): runs `app` inside an app that is already running, whose
+    /// `UIApplicationMain` the host called (a launcher with its own interface), and returns at
+    /// once instead of never returning as [`EventLoop::run_app`] does. The app's events reach
+    /// `app` from the host's run loop for the rest of the process.
+    ///
+    /// Call it on the main thread, after the host's application has launched. As with
+    /// [`EventLoop::run_app`], only one loop per process.
+    fn spawn_app<A: ApplicationHandler<Self::UserEvent> + 'static>(self, app: A);
 }
 
 impl<T: 'static> EventLoopExtIOS for EventLoop<T> {
+    type UserEvent = T;
+
     fn idiom(&self) -> Idiom {
         self.event_loop.idiom()
+    }
+
+    fn spawn_app<A: ApplicationHandler<T> + 'static>(self, mut app: A) {
+        self.event_loop.spawn(move |event, event_loop| {
+            crate::event_loop::dispatch_event_for_app(&mut app, event_loop, event)
+        });
     }
 }
 

@@ -17,7 +17,7 @@ use objc2_foundation::{MainThreadMarker, NSNotificationCenter, NSObject};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDidBecomeActiveNotification,
     UIApplicationDidEnterBackgroundNotification, UIApplicationDidFinishLaunchingNotification,
-    UIApplicationDidReceiveMemoryWarningNotification, UIApplicationMain,
+    UIApplicationDidReceiveMemoryWarningNotification, UIApplicationMain, UIApplicationState,
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
     UIApplicationWillTerminateNotification, UIDevice, UIScreen, UIUserInterfaceIdiom,
 };
@@ -313,6 +313,61 @@ impl<T: 'static> EventLoop<T> {
             )
         };
         unreachable!()
+    }
+
+    /// Horizon (YuyuFrame): the loop of an app that is already running, its `UIApplicationMain`
+    /// called by the host (the launcher). Nothing blocks: the handler is kept, the app is treated
+    /// as launched, and this returns. The run loop observers set up by `new` then drive the
+    /// handler from the host's own loop, exactly as they do under `run`.
+    pub(crate) fn spawn<F>(self, handler: F)
+    where
+        F: FnMut(Event<T>, &RootActiveEventLoop) + 'static,
+    {
+        let application: Option<Retained<UIApplication>> =
+            unsafe { msg_send_id![UIApplication::class(), sharedApplication] };
+        let application = application.expect(
+            "`EventLoopExtIOS::spawn_app` needs the host's `UIApplicationMain` to be running",
+        );
+
+        let EventLoop {
+            mtm,
+            sender,
+            receiver,
+            window_target,
+            _did_finish_launching_observer,
+            _did_become_active_observer,
+            _will_resign_active_observer,
+            _will_enter_foreground_observer,
+            _did_enter_background_observer,
+            _will_terminate_observer,
+            _did_receive_memory_warning_observer,
+        } = self;
+        // The loop lives as long as the app: its observers (and the sender its proxies clone)
+        // must too, or the notifications stop reaching the handler once this returns.
+        std::mem::forget((
+            sender,
+            _did_finish_launching_observer,
+            _did_become_active_observer,
+            _will_resign_active_observer,
+            _will_enter_foreground_observer,
+            _did_enter_background_observer,
+            _will_terminate_observer,
+            _did_receive_memory_warning_observer,
+        ));
+
+        let handler: Box<dyn FnMut(Event<HandlePendingUserEvents>, &RootActiveEventLoop)> =
+            Box::new(map_user_event(handler, receiver));
+        let handler = EventLoopHandler { handler, event_loop: window_target };
+
+        app_state::will_launch(mtm, handler);
+        // The app finished launching long ago: its notification won't come again.
+        app_state::did_finish_launching(mtm);
+        // Nor will `applicationDidBecomeActive:` if it is already in front: the windows are made
+        // on `Resumed`, so it is sent here. In the background the notification still comes.
+        // SAFETY: a property of UIApplication, read on the main thread (`mtm`).
+        if unsafe { application.applicationState() } == UIApplicationState::Active {
+            app_state::handle_nonuser_event(mtm, EventWrapper::StaticEvent(Event::Resumed));
+        }
     }
 
     pub fn create_proxy(&self) -> EventLoopProxy<T> {

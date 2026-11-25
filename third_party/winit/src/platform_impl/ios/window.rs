@@ -3,8 +3,10 @@
 use std::collections::VecDeque;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
-use objc2::{class, declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::runtime::{AnyClass, AnyObject, NSObject};
+use objc2::{
+    class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
+};
 use objc2_foundation::{
     CGFloat, CGPoint, CGRect, CGSize, MainThreadBound, MainThreadMarker, NSObjectProtocol,
 };
@@ -81,6 +83,7 @@ impl WinitUIWindow {
         view_controller: &UIViewController,
     ) -> Retained<Self> {
         let this: Retained<Self> = unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] };
+        attach_to_window_scene(&this);
 
         this.setRootViewController(Some(view_controller));
 
@@ -103,6 +106,37 @@ impl WinitUIWindow {
 
     pub(crate) fn id(&self) -> WindowId {
         (self as *const Self as usize as u64).into()
+    }
+}
+
+/// Horizon (YuyuFrame): in an app with scenes (a host whose `UIApplicationMain` runs them, as
+/// Tauri's does), a window without a scene is never shown. It joins the first window scene the
+/// app has connected; an app without scenes (iOS 12, or `run` here) has none and is left alone.
+fn attach_to_window_scene(window: &UIWindow) {
+    // SAFETY: UIKit methods on the main thread (the caller holds its marker): the shared
+    // application, its `connectedScenes` set (iOS 13+, checked first), the set's objects, and
+    // `setWindowScene:` with a `UIWindowScene`, the class each object is tested against.
+    unsafe {
+        let application: Option<Retained<NSObject>> =
+            msg_send_id![class!(UIApplication), sharedApplication];
+        let Some(application) = application else { return };
+        let has_scenes: bool =
+            msg_send![&application, respondsToSelector: sel!(connectedScenes)];
+        if !has_scenes {
+            return;
+        }
+        let Some(scene_class) = AnyClass::get("UIWindowScene") else { return };
+        let scenes: Retained<NSObject> = msg_send_id![&application, connectedScenes];
+        let scenes: Retained<NSObject> = msg_send_id![&scenes, allObjects];
+        let count: usize = msg_send![&scenes, count];
+        for index in 0..count {
+            let scene: Retained<NSObject> = msg_send_id![&scenes, objectAtIndex: index];
+            let is_window_scene: bool = msg_send![&scene, isKindOfClass: scene_class];
+            if is_window_scene {
+                let () = msg_send![window, setWindowScene: &*scene];
+                return;
+            }
+        }
     }
 }
 

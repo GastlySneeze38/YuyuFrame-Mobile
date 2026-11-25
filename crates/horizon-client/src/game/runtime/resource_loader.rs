@@ -308,7 +308,19 @@ pub(super) fn run_loading(
         sound_registry,
         suspended: false,
     };
-    let mut app = App::Loading(Box::new(loading));
+    let app = App::Loading(Box::new(loading));
+    #[cfg(target_os = "ios")]
+    {
+        loading_screen::spawn_in_host(event_loop()?, app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "ios"))]
+    run_to_end(app)
+}
+
+/// The loop until the window closes, then what the game left: the report, its error.
+#[cfg(not(target_os = "ios"))]
+fn run_to_end(mut app: App) -> Result<()> {
     let result = event_loop()?.run_app(&mut app);
     narrator::stop();
     match &mut app {

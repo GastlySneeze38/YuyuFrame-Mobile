@@ -525,12 +525,17 @@ impl Game<'_> {
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
             30 => self.open_split_settings(),
-            // On Android the launcher comes in front and the game stays open behind it, paused
+            // On Android and iOS the launcher comes in front and the game stays open behind it, paused
             // under this menu, for the launcher to bring back. Elsewhere, or when that fails, the
             // world saves and the game ends as Quit does.
             31 => {
                 #[cfg(target_os = "android")]
                 if crate::android::show_launcher() {
+                    return Ok(());
+                }
+                // iOS: the launcher is the same app, its window beside the game's.
+                #[cfg(target_os = "ios")]
+                if crate::ios::show_launcher() {
                     return Ok(());
                 }
                 self.begin_closing_save(true)?

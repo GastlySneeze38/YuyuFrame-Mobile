@@ -53,7 +53,15 @@ pub fn prepare_main() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// iOS: the main thread is the app's, which hosts the launcher too, and iOS sizes it (about
+/// 1 MiB) without a link setting to raise it. No guest runs there, so nothing is asked of it: the
+/// game's deep work runs on its own threads, which `builder` sizes.
+#[cfg(target_os = "ios")]
+fn prepare() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "ios")))]
 fn prepare() -> std::io::Result<()> {
     // Executable link settings reserve the same stack on Windows and macOS.
     inspect_current().map_err(std::io::Error::other)

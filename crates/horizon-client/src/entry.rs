@@ -274,6 +274,9 @@ pub fn start<G>(
             game::exit_code::ERROR
         });
     }
+    // On iOS the start returns with the game running on in the launcher's loop
+    // (`EventLoopExtIOS::spawn_app`): it ends with the app, never here.
+    #[cfg(not(target_os = "ios"))]
     horizon_hooks::engine::shutdown();
     logging::flush();
 }

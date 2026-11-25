@@ -6,7 +6,7 @@
 //! (accounts sealed by its keystore, files prepared by a Java it downloads).
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool};
+use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2::{MainThreadMarker, class, msg_send};
 use objc2_foundation::{NSDictionary, NSNotification, NSNotificationCenter, NSString, NSURL};
 use std::io;
@@ -95,6 +95,74 @@ fn open_url(uri: &str) -> io::Result<()> {
         ];
     }
     Ok(())
+}
+
+/// The app's windows (the launcher's and the game's, which winit makes on `Resumed`) on the main
+/// thread, with whether each is the game's. None off the main thread or before the app exists.
+fn windows() -> Option<Vec<(Retained<AnyObject>, bool)>> {
+    MainThreadMarker::new()?;
+    let app = application()?;
+    // The class of winit's windows (`WinitUIWindow`), registered once the game made one.
+    let game_class = AnyClass::get(c"WinitUIWindow");
+    // SAFETY: on the main thread: `windows` is an NSArray of UIWindow, read by index below its
+    // count, and `isKindOfClass:` takes a class.
+    unsafe {
+        let list: Retained<AnyObject> = msg_send![&*app, windows];
+        let count: usize = msg_send![&*list, count];
+        Some(
+            (0..count)
+                .map(|index| {
+                    let window: Retained<AnyObject> = msg_send![&*list, objectAtIndex: index];
+                    let game = game_class.is_some_and(|class| {
+                        let kind: Bool = msg_send![&*window, isKindOfClass: class];
+                        kind.as_bool()
+                    });
+                    (window, game)
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Shows the game's windows, or the launcher's, and makes the first of them the key window, the
+/// one the touches and the keyboard go to. False when there is none to show.
+fn bring_front(game: bool) -> bool {
+    let Some(windows) = windows() else {
+        return false;
+    };
+    if !windows.iter().any(|(_, is_game)| *is_game == game) {
+        return false;
+    }
+    let mut keyed = false;
+    for (window, is_game) in &windows {
+        // SAFETY: on the main thread (`windows` checked it): `setHidden:` and
+        // `makeKeyAndVisible` are UIWindow's.
+        unsafe {
+            if *is_game == game {
+                let () = msg_send![&**window, setHidden: Bool::NO];
+                if !keyed {
+                    let () = msg_send![&**window, makeKeyAndVisible];
+                    keyed = true;
+                }
+            } else {
+                let () = msg_send![&**window, setHidden: Bool::YES];
+            }
+        }
+    }
+    true
+}
+
+/// The pause menu's "Launcher" row: the launcher's window comes in front and the game's hides,
+/// the game left open behind it under its pause menu, as on Android. False when the launcher has
+/// no window here (the game started on its own), where the row ends the game instead.
+pub(crate) fn show_launcher() -> bool {
+    bring_front(false)
+}
+
+/// "Back to the game", from the launcher: the game's window in front again, where it was left.
+/// False when the game has no window (not started yet in this app).
+pub fn show_game() -> bool {
+    bring_front(true)
 }
 
 fn audio_session() -> Option<Retained<AnyObject>> {

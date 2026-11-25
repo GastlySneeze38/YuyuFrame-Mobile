@@ -34,6 +34,19 @@ pub(super) fn event_loop() -> Result<EventLoop<()>> {
     Ok(EventLoop::new()?)
 }
 
+/// iOS: runs `app` inside the launcher's app, whose `UIApplicationMain` already runs
+/// (`EventLoopExtIOS::spawn_app`, our winit). This returns at once and the game goes on in that
+/// loop for the rest of the process: what follows the loop elsewhere (the report, the error, the
+/// shutdown) has no moment to run, as the loop never ended on iOS before either.
+#[cfg(target_os = "ios")]
+pub(super) fn spawn_in_host<A: winit::application::ApplicationHandler + 'static>(
+    event_loop: EventLoop<()>,
+    app: A,
+) {
+    use winit::platform::ios::EventLoopExtIOS;
+    event_loop.spawn_app(app);
+}
+
 /// The window system ended the event loop with a failure (on Linux, a compositor dropping the
 /// connection after a protocol error) while fullscreen was on: the next start opens windowed, so a
 /// fullscreen the system can't show doesn't crash every launch (#2904).
@@ -62,6 +75,11 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
             game.native_game_shutting_down();
         }
         return result;
+    }
+    // A start that loads its resources before the window (a harness's, a benchmark's): never
+    // on iOS, where the launcher's app hosts the loop and only `run_loading`'s start is made.
+    if cfg!(target_os = "ios") {
+        return Err("iOS starts the game through its loading screen only".into());
     }
     let mut split = split::Split::new(game);
     let result = event_loop()?.run_app(&mut split);

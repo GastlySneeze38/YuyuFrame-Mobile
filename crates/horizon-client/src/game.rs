@@ -8,9 +8,10 @@ use key_codes::{
 pub(crate) use launch_options::Options;
 #[cfg(not(target_os = "android"))]
 use loading_screen::missing_resources;
-use loading_screen::{
-    App, Loading, event_loop, leave_fullscreen_after, run_event_loop, unclean_start_recovery,
-};
+// The loop's end, which iOS never reaches (`loading_screen::spawn_in_host`).
+#[cfg(not(target_os = "ios"))]
+use loading_screen::leave_fullscreen_after;
+use loading_screen::{App, Loading, event_loop, run_event_loop, unclean_start_recovery};
 use motion_ids::{motion_at, motion_block_entity};
 use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
 use resource_loader::{

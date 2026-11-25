@@ -26,7 +26,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         &[],
         &settings.language,
     ));
-    let mut app = Missing {
+    let app = Missing {
         window: None,
         renderer: None,
         gui: UiResources {
@@ -44,8 +44,17 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         error: None,
     };
 
-    EventLoop::new()?.run_app(&mut app)?;
-    app.error.map_or(Ok(()), Err)
+    #[cfg(target_os = "ios")]
+    {
+        loading_screen::spawn_in_host(EventLoop::new()?, app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let mut app = app;
+        EventLoop::new()?.run_app(&mut app)?;
+        app.error.map_or(Ok(()), Err)
+    }
 }
 
 impl Missing {
